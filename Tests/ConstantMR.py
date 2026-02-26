@@ -1,18 +1,16 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from Modules import (
+from TestModules import (
     set_winplot_dark,
     PA_PER_PSI,
     solve_SysCdAs,
     get_mdot,
 )
 
-
 # Inputs
-MR_sweep = np.linspace(1.5, 3.0, 60)
-
-Pc_psia_const = 300.0
-Pc_pa_const   = Pc_psia_const * PA_PER_PSI
+Pc_psia = np.linspace(200.0, 350.0, 60)
+Pc_pa   = Pc_psia * PA_PER_PSI
+MR = 2.5
 
 P_tank_f  = 500.0 * PA_PER_PSI   # Pa
 P_tank_ox = 450.0 * PA_PER_PSI   # Pa
@@ -21,17 +19,17 @@ inj_CdA_f  = 0.5  * 1e-4   # m^2
 inj_CdA_ox = 1.0  * 1e-4   # m^2
 
 throat_area = 6.05 / 1550.0      # m^2
-expansion_ratio = 4.73
+expansion_ratio = 4.73 
 
 rho_fuel = 804.0                 # kg/m^3
 rho_ox   = 1104.0                # kg/m^3
 
 cstar_eff = 1.0
-cf_eff = 1.0
+cf_eff = 1.0  
 
-ambient_pressure = 14.67 * PA_PER_PSI   # Pa
+ambient_pressure = 14.67 * PA_PER_PSI   # Pa 
 
-# Sweep MR
+# Sweep Pc
 P_inj_f_psia = []
 P_inj_ox_psia = []
 stiff_f = []
@@ -44,11 +42,11 @@ mdot_tot = []
 sysCdA_f_cm2 = []
 sysCdA_ox_cm2 = []
 
-for MR in MR_sweep:
+for Pc in Pc_pa:
     try:
         # --- System CdAs + injector pressures ---
         sysCdA_f, sysCdA_o, P_inj_f, P_inj_o = solve_SysCdAs(
-            Pc_pa_const, MR,
+            Pc, MR,
             P_tank_f, P_tank_ox,
             inj_CdA_f, inj_CdA_ox,
             rho_fuel, rho_ox,
@@ -64,12 +62,12 @@ for MR in MR_sweep:
         P_inj_ox_psia.append(P_inj_o / PA_PER_PSI)
 
         # Injector stiffness (% of Pc)
-        Pc_psia_i = Pc_psia_const
+        Pc_psia_i = Pc / PA_PER_PSI
         stiff_f.append((P_inj_f / PA_PER_PSI - Pc_psia_i) / Pc_psia_i * 100.0)
         stiff_ox.append((P_inj_o / PA_PER_PSI - Pc_psia_i) / Pc_psia_i * 100.0)
 
         # Mass flows (kg/s)
-        mdot_total = get_mdot(Pc_pa_const, MR, throat_area, cstar_eff)
+        mdot_total = get_mdot(Pc, MR, throat_area, cstar_eff)
         mdot_fuel  = mdot_total / (1.0 + MR)
         mdot_oxid  = mdot_total - mdot_fuel
 
@@ -114,8 +112,8 @@ fig, axs = plt.subplots(
 )
 
 fig.suptitle(
-    "Constant Chamber Pressure Sweep vs Mixture Ratio\n"
-    f"Pc = {Pc_psia_const:.1f} psia   |   Throat Area = {throat_area*1550:.2f} in²   |   "
+    "Constant Mixture Ratio Sweep vs Chamber Pressure\n"
+    f"MR = {MR:.2f}   |   Throat Area = {throat_area*1550:.2f} in²   |   "
     f"Tanks (psia): Fuel {P_tank_f/PA_PER_PSI:.1f}, Ox {P_tank_ox/PA_PER_PSI:.1f}   |   "
     f"Injector CdAs (cm²): Fuel {inj_CdA_f*1e4:.2f}, Ox {inj_CdA_ox*1e4:.2f}\n"
     f"c* eff = {cstar_eff*100:.1f}%   |   "
@@ -131,39 +129,39 @@ for ax in axs.ravel():
     for spine in ax.spines.values():
         spine.set_linewidth(1.1)
     ax.margins(x=0.02)
-    ax.set_xlabel("Mixture Ratio (O/F)", fontsize=11)
+    ax.set_xlabel("Pc (psia)", fontsize=11)
 
 # Injector pressures
 ax = axs[0, 0]
-ax.plot(MR_sweep, P_inj_f_psia, label="Inj. Fuel", linewidth=2.8, color="red")
-ax.plot(MR_sweep, P_inj_ox_psia, label="Inj. Ox",   linewidth=2.8, color="lime")
+ax.plot(Pc_psia, P_inj_f_psia, label="Inj. Fuel", linewidth=2.8, color="red")
+ax.plot(Pc_psia, P_inj_ox_psia, label="Inj. Ox",   linewidth=2.8, color="lime")
 ax.set_ylabel("Injector Pressure (psia)", fontsize=11)
 ax.legend(loc="best", fontsize=11)
 
 # Injector stiffness
 ax = axs[0, 1]
-ax.plot(MR_sweep, stiff_f,  label="Fuel Stiffness", linewidth=2.8, color="red")
-ax.plot(MR_sweep, stiff_ox, label="Ox Stiffness",   linewidth=2.8, color="lime")
+ax.plot(Pc_psia, stiff_f,  label="Fuel Stiffness", linewidth=2.8, color="red")
+ax.plot(Pc_psia, stiff_ox, label="Ox Stiffness",   linewidth=2.8, color="lime")
 ax.set_ylabel("Injector Stiffness (% of Pc)", fontsize=11)
 ax.legend(loc="best", fontsize=11)
 
 # Mass flows
 ax = axs[1, 0]
-ax.plot(MR_sweep, mdot_f,   label="Fuel",  linewidth=2.8, color="red")
-ax.plot(MR_sweep, mdot_ox,  label="Ox",    linewidth=2.8, color="lime")
-ax.plot(MR_sweep, mdot_tot, label="Total", linewidth=2.8, color="deepskyblue")
+ax.plot(Pc_psia, mdot_f,   label="Fuel",  linewidth=2.8, color="red")
+ax.plot(Pc_psia, mdot_ox,  label="Ox",    linewidth=2.8, color="lime")
+ax.plot(Pc_psia, mdot_tot, label="Total", linewidth=2.8, color="deepskyblue")
 ax.set_ylabel("Mass Flow (kg/s)", fontsize=11)
 ax.legend(loc="best", fontsize=11)
 
 # System CdAs
 ax = axs[1, 1]
-ax.plot(MR_sweep, sysCdA_f_cm2,  label="Fuel", linewidth=2.8, color="red")
-ax.plot(MR_sweep, sysCdA_ox_cm2, label="Ox",   linewidth=2.8, color="lime")
+ax.plot(Pc_psia, sysCdA_f_cm2,  label="Fuel", linewidth=2.8, color="red")
+ax.plot(Pc_psia, sysCdA_ox_cm2, label="Ox",   linewidth=2.8, color="lime")
 ax.set_ylabel("System CdA (cm²)", fontsize=11)
 ax.legend(loc="best", fontsize=11)
 
 # Consistent x-limits
-xmin, xmax = float(np.nanmin(MR_sweep)), float(np.nanmax(MR_sweep))
+xmin, xmax = float(np.nanmin(Pc_psia)), float(np.nanmax(Pc_psia))
 for ax in axs.ravel():
     ax.set_xlim(xmin, xmax)
 
