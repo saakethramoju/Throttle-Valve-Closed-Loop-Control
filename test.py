@@ -1,49 +1,20 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from UnitConversions import PA_PER_PSI
+from UnitConversions import PA_PER_PSI, M3_PER_L, M2_PER_IN2
+from Components import Tank, Line, Drain
 
 
-# Input
-P_tank_f  = 450.0 * PA_PER_PSI   # Pa
-P_tank_ox = 400.0 * PA_PER_PSI   # Pa  (not used yet, kept)
+FuelTank = Tank('F-Tank', 450 * PA_PER_PSI, 70 * M3_PER_L, 800)
 
-rho_fuel = 800.0                 # kg/m^3
-line_CdA = 0.5e-4                # m^2
+FuelRunline = Line('Fuel Runline', 0, 3, 0.5 * M2_PER_IN2, 0.2)
 
-t = np.linspace(0.0, 5.0, 400)   # s
+Ambient = Drain("Ambient", 14.67 * PA_PER_PSI)
 
-# Backpressure definition in psia (for readability), then convert to Pa
-P_back_psia = 200.0 + 100.0 * np.heaviside(t - 3.0, 1.0)
-P_back      = P_back_psia * PA_PER_PSI   # Pa
 
-# -----------------------------
-# Utility
-# -----------------------------
-def mdot_from_cda(CdA, P1, P2, rho):
-    """Orifice-equivalent: mdot = sign(dP) * CdA * sqrt(2*rho*|dP|)"""
-    dP = P1 - P2
-    return np.sign(dP) * CdA * np.sqrt(2.0 * rho * np.abs(dP))
 
-# Mass flow (kg/s)
-mdot = mdot_from_cda(line_CdA, P_tank_f, P_back, rho_fuel)
+mdot = Line.incompressible_CdA_equation(FuelTank.p, Ambient.p, FuelTank.rho, FuelRunline.CdA)
+FuelRunline.mdot = mdot
 
-# If reverse flow is physically impossible for your case (check valve / injector),
-# clamp it to 0:
-mdot = np.maximum(mdot, 0.0)
+print(FuelRunline.mdot)
 
-# -----------------------------
-# Plot (mdot + backpressure sanity)
-# -----------------------------
-fig, ax = plt.subplots(figsize=(9, 5))
 
-ax.plot(t, mdot, linewidth=2.5)
-ax.set_xlabel("Time (s)")
-ax.set_ylabel("Mass Flow (kg/s)")
-ax.grid(True)
-
-ax2 = ax.twinx()
-ax2.plot(t, P_back_psia, linestyle="--", linewidth=2.0)
-ax2.set_ylabel("Back Pressure (psia)")
-
-plt.tight_layout()
-plt.show()
