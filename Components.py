@@ -1,4 +1,3 @@
-import numpy as np
 
 # ----- Base Classes -----
 class Source:
@@ -37,7 +36,7 @@ class Drain:
     """
     def __init__(self, 
                  name: str, 
-                 pressure: float
+                 pressure: float = 14.67
                  ):
         
         self.name = name
@@ -66,7 +65,7 @@ class Volume:
     def __init__(self,
                  name: str,
                  pressure: float,   # Pa
-                 volume: float      # m^3
+                 volume: float = 0.1     # m^3
                  ):
         
         self.name = name
@@ -95,7 +94,7 @@ class Branch:
     """
     def __init__(self,
                  name: str,
-                 mass_flow: float,  # kg/s
+                 mass_flow: float = 0,  # kg/s
                  ):
         
         self.name = name
@@ -125,14 +124,15 @@ class Tank(Volume):
     density : float
         Fluid density within the tank [kg/m^3].
     """
-    def __init__(self, name, pressure, volume, density: float):
+    def __init__(self, name, propellant: str, pressure, volume = 0.1, density: float = 999.84):
         super().__init__(name, pressure, volume)
+        self.propellant = propellant
         self.rho = density  # kg/m^3
 
     def __str__(self):
         return (
-            f"Tank (name={self.name}, p={self.p:.3e} Pa, "
-            f"V={self.V:.3e} m^3, rho={self.rho:.3e} kg/m^3)"
+            f"Tank (name={self.name}, propellant={self.propellant}, "
+            f"p={self.p:.3e} Pa, V={self.V:.3e} m^3, rho={self.rho:.3e} kg/m^3)"
         )
     
 
@@ -153,7 +153,7 @@ class InjectorManifold(Volume):
     density : float
         Fluid density within the tank [kg/m^3].
     """
-    def __init__(self, name, pressure, volume, density: float):
+    def __init__(self, name, pressure, volume = 8e-4, density: float = 999.84):
         super().__init__(name, pressure, volume)
         self.rho = density  # kg/m^3
 
@@ -180,15 +180,18 @@ class CombustionChamber(Volume):
         Chamber volume [m^3].
     mixture_ratio : float
         Oxidizer-to-fuel mass ratio (O/F).
+    cstar_efficiency: float
+        eta_c* 
     """
-    def __init__(self, name, pressure, volume, mixture_ratio: float):
+    def __init__(self, name, pressure, volume = 3e-3, mixture_ratio: float = 2, cstar_efficiency: float = 1):
         super().__init__(name, pressure, volume)
         self.MR = mixture_ratio
+        self.eta_cstar = cstar_efficiency
 
     def __str__(self):
         return (
             f"Combustion Chamber (name={self.name}, p={self.p:.3e} Pa, "
-            f"V={self.V:.3e} m^3, MR={self.MR:.3f})"
+            f"V={self.V:.3e} m^3, MR={self.MR:.3f}), eta_cstar={self.eta_cstar*100:.3e} %"
         )
 
 
@@ -208,7 +211,7 @@ class Orifice(Branch):
     CdA : float
         Effective discharge area [m^2].
     """
-    def __init__(self, name, mass_flow, CdA: float):
+    def __init__(self, name, CdA: float = 1e-4,  mass_flow = 0):
         super().__init__(name, mass_flow)
         self.CdA = CdA  # m^2
 
@@ -237,9 +240,9 @@ class Line(Branch):
     Cd : float
         Discharge coefficient (dimensionless, 0 <= Cd <= 1).
     """
-    def __init__(self, name, mass_flow, length: float, cross_sectional_area: float, Cd: float):
+    def __init__(self, name, length: float = 1, cross_sectional_area: float = 1e-4, Cd: float = 1, mass_flow = 0):
         super().__init__(name, mass_flow)
-        self.L = length
+        self.L = length     # m
         self.A = cross_sectional_area   # m^2
         self.Cd = Cd
         self.CdA = self.A * self.Cd
@@ -267,7 +270,7 @@ class Valve(Branch):
     CdA : float
         Effective discharge area [m^2].
     """
-    def __init__(self, name, mass_flow, CdA: float):
+    def __init__(self, name, CdA: float = 1e-4, mass_flow = 0):
         super().__init__(name, mass_flow)
         self.CdA = CdA  # m^2
 
@@ -297,18 +300,29 @@ class Nozzle(Branch):
         (Exit Area) / (Throat Area).
     contraction_ratio: float
         (Injector Face Area) / (Throat Area).
+    eta_cf : float, optional
+        Multiplicative efficiency factor applied to Cf (dimensionless).
+        Use 1.0 for ideal RocketCEA Cf. Typical realistic values might be ~0.95-0.99
+        depending on nozzle design/model fidelity. Default is 1.0.
     nfz : int
         Number frozen zone (0: Equilibrium, 1: Fully frozen, 2: Frozen from throat).
+    mass_flow : float
+        Mass flow rate through the valve [kg/s].
+    thrust : float
+        Nozzle thrust [N].
     """
-    def __init__(self, name, mass_flow, throat_area: float, expansion_ratio: float, contraction_ratio: float, nfz: int):
+    def __init__(self, name, throat_area: float = 4e-4, expansion_ratio: float = 6, contraction_ratio: float = 3, 
+                 eta_cf: float = 1, nfz: int = 0, mass_flow = 0, thrust: float = 0):
         super().__init__(name, mass_flow)
         self.At = throat_area
         self.eps = expansion_ratio
         self.eps_c = contraction_ratio
+        self.eta_cf = eta_cf
         self.nfz = nfz
+        self.F = thrust
 
     def __str__(self):
         return (
-            f"Nozzle (name={self.name}, mdot={self.mdot:.3e} kg/s, At={self.CdA:.3e} m^2), "
-            f"eps={self.eps:.3e}, eps_c={self.eps_c:.3e}, nfz={self.nfz:.3e}"
+            f"Nozzle (name={self.name}, mdot={self.mdot:.3e} kg/s, thrust={self.F:.3e}, eta_cf={self.eta_cf:.3e}"
+            f"At={self.At:.3e} m^2), eps={self.eps:.3e}, eps_c={self.eps_c:.3e}, nfz={self.nfz}"
         )

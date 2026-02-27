@@ -3,7 +3,7 @@ import numpy as np
 def incompressible_CdA_equation(P1: float, P2: float,   # Pa
                                 rho: float,             # kg/m^3
                                 CdA: float,             # m^2
-                                ):
+                                ) -> float:
     """
     Calculates mass flow for incompressible flow using the CdA equation.
 
