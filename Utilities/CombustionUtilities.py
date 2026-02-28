@@ -1,4 +1,5 @@
 from rocketcea.cea_obj_w_units import CEA_Obj
+import numpy as np
 
 
 def create_CEA_object(fuel: str = 'RP-1', oxidizer: str = 'LOX') -> CEA_Obj:
@@ -111,10 +112,21 @@ def choked_nozzle_mass_flow(Pc : float, MR: float, At: float, eta_cstar: float =
     - Units must be consistent (SI recommended).
     """
     cstar_ideal = cea_obj.get_Cstar(Pc, MR)
-    mdot = Pc * At / (eta_cstar * cstar_ideal)
+    if eta_cstar <= 0:
+        raise ValueError("eta_cstar must be > 0")
+    if At <= 0:
+        raise ValueError("At must be > 0")
+    if Pc <= 0:
+        raise ValueError("Pc must be > 0")
 
-    return mdot
+    # Guard bad CEA returns
+    if (cstar_ideal is None) or (not np.isfinite(cstar_ideal)) or (cstar_ideal <= 0):
+        raise ValueError(
+            f"Invalid cstar_ideal from CEA: {cstar_ideal} "
+            f"(Pc={Pc}, MR={MR})"
+        )
 
+    return Pc * At / (eta_cstar * cstar_ideal)
 
 
 def choked_nozzle_thrust(

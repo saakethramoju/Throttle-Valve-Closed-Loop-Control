@@ -210,15 +210,18 @@ class Orifice(Branch):
         Mass flow rate through the valve [kg/s].
     CdA : float
         Effective discharge area [m^2].
+    stiffness : float
+        dp/p.
     """
-    def __init__(self, name, CdA: float = 1e-4,  mass_flow = 0):
+    def __init__(self, name, CdA: float = 1e-4,  mass_flow = 0, stiffness: float = 0):
         super().__init__(name, mass_flow)
         self.CdA = CdA  # m^2
+        self.stiffness = stiffness
 
     def __str__(self):
         return (
             f"Orifice (name={self.name}, mdot={self.mdot:.3e} kg/s, "
-            f"CdA={self.CdA:.3e} m^2)"
+            f"CdA={self.CdA:.3e} m^2), Stiffness={self.stiffness*100:3e} %"
         )
 class Line(Branch):
     """

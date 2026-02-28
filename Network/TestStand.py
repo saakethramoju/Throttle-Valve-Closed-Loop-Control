@@ -4,9 +4,12 @@ import copy
 import numpy as np
 from scipy.optimize import root
 
-from Components import *
-from CombustionUtilities import choked_nozzle_thrust, choked_nozzle_mass_flow, create_CEA_object
-from FluidUtilities import incompressible_CdA_equation
+from .Components import *
+from Utilities import choked_nozzle_thrust, choked_nozzle_mass_flow, create_CEA_object
+from Utilities import incompressible_CdA_equation
+from Physics.Constants import *
+
+from .Balance import Balance
 
 
 class TestStand:
@@ -80,11 +83,8 @@ class TestStand:
         return f"TestStand (name={self.name}, FuelTank={self.FuelTank!r}, OxTank={self.OxTank!r}, MainChamber={self.MainChamber!r}, TCA={self.TCA!r})"
 
 
-    def __str__(self) -> str:
+    def __str__(self, units: str = "SI") -> str:
         # Local helpers
-        def _fmt_pa(p):
-            return f"{p:,.0f} Pa" if p is not None else "—"
-
         def _fmt_kgps(x):
             return f"{x:.4f} kg/s" if x is not None else "—"
 
@@ -110,6 +110,34 @@ class TestStand:
             out = [fmt_row(headers), sep]
             out += [fmt_row(r) for r in rows]
             return "\n".join(out)
+
+        # ------------------------
+        # Unit system selection
+        # ------------------------
+        units = (units or "SI").upper()
+
+        if units == "SI":
+            def _fmt_pressure(p):
+                return f"{p:,.2f} Pa" if p is not None else "—"
+
+            def _fmt_area(a):
+                return f"{a:.3e} m^2" if a is not None else "—"
+
+            def _fmt_force(f):
+                return f"{f:,.2f} N" if f is not None else "—"
+
+        elif units == "US":
+            def _fmt_pressure(p):
+                return f"{p / PA_PER_PSI:,.2f} psi" if p is not None else "—"
+
+            def _fmt_area(a):
+                return f"{a * IN2_PER_M2:.4f} in^2" if a is not None else "—"
+
+            def _fmt_force(f):
+                return f"{f * LBF_PER_N:,.2f} lbf" if f is not None else "—"
+
+        else:
+            raise ValueError("units must be 'SI' or 'US'")
 
         # Pull common numbers (don’t crash if unsolved)
         mdot_f = _get(self.FuelInjector, "mdot")
@@ -143,14 +171,18 @@ class TestStand:
         CdA_f_inj = _get(self.FuelInjector, "CdA")
         CdA_ox_inj = _get(self.OxInjector, "CdA")
 
+        # Injector stiffness (dimensionless dp/p)
+        stiff_f = _get(self.FuelInjector, "stiffness")
+        stiff_ox = _get(self.OxInjector, "stiffness")
+
         # Build tables
         state_rows = [
-            ("Fuel Tank",        _fmt_pa(P_tank_f),   f"{rho_f:.1f} kg/m^3" if rho_f is not None else "—"),
-            ("Fuel Manifold",    _fmt_pa(P_inj_f),    f"{rho_f_man:.1f} kg/m^3" if rho_f_man is not None else "—"),
-            ("Ox Tank",          _fmt_pa(P_tank_ox),  f"{rho_ox:.1f} kg/m^3" if rho_ox is not None else "—"),
-            ("Ox Manifold",      _fmt_pa(P_inj_ox),   f"{rho_ox_man:.1f} kg/m^3" if rho_ox_man is not None else "—"),
-            ("Chamber",          _fmt_pa(Pc),         "—"),
-            ("Ambient",          _fmt_pa(Pamb),       "—"),
+            ("Fuel Tank",        _fmt_pressure(P_tank_f),   f"{rho_f:.1f} kg/m^3" if rho_f is not None else "—"),
+            ("Fuel Manifold",    _fmt_pressure(P_inj_f),    f"{rho_f_man:.1f} kg/m^3" if rho_f_man is not None else "—"),
+            ("Ox Tank",          _fmt_pressure(P_tank_ox),  f"{rho_ox:.1f} kg/m^3" if rho_ox is not None else "—"),
+            ("Ox Manifold",      _fmt_pressure(P_inj_ox),   f"{rho_ox_man:.1f} kg/m^3" if rho_ox_man is not None else "—"),
+            ("Chamber",          _fmt_pressure(Pc),         "—"),
+            ("Ambient",          _fmt_pressure(Pamb),       "—"),
         ]
 
         flow_rows = [
@@ -158,19 +190,21 @@ class TestStand:
             ("Ox mdot",    _fmt_kgps(mdot_ox)),
             ("Total mdot", _fmt_kgps(mdot_total)),
             ("MR",   f"{MR:.4f}" if MR is not None else "—"),
+            ("Fuel inj stiffness", f"{100.0 * stiff_f:.2f} %" if stiff_f is not None else "—"),
+            ("Ox inj stiffness",   f"{100.0 * stiff_ox:.2f} %" if stiff_ox is not None else "—"),
         ]
 
         geom_rows = [
-            ("At",  f"{At:.3e} m^2" if At is not None else "—"),
+            ("At",  _fmt_area(At)),
             ("eps", f"{eps:.3f}" if eps is not None else "—"),
-            ("F",   f"{F:,.2f} N" if F is not None else "—"),
+            ("F",   _fmt_force(F)),
         ]
 
         cda_rows = [
-            ("Fuel throttle CdA", f"{CdA_f_sys:.3e} m^2" if CdA_f_sys is not None else "—"),
-            ("Ox throttle CdA",   f"{CdA_ox_sys:.3e} m^2" if CdA_ox_sys is not None else "—"),
-            ("Fuel injector CdA", f"{CdA_f_inj:.3e} m^2" if CdA_f_inj is not None else "—"),
-            ("Ox injector CdA",   f"{CdA_ox_inj:.3e} m^2" if CdA_ox_inj is not None else "—"),
+            ("Fuel throttle CdA", _fmt_area(CdA_f_sys)),
+            ("Ox throttle CdA",   _fmt_area(CdA_ox_sys)),
+            ("Fuel injector CdA", _fmt_area(CdA_f_inj)),
+            ("Ox injector CdA",   _fmt_area(CdA_ox_inj)),
         ]
 
         # Final report string
@@ -191,7 +225,6 @@ class TestStand:
         x0: list[float] | None = None,
         tol: float = 1e-9,
         maxfev: int | None = None,
-        Pamb: float | None = None,
     ) -> "TestStand":
         """
         Solve for steady-state injector-manifold pressures and chamber pressure.
@@ -211,7 +244,7 @@ class TestStand:
 
         After convergence, this method returns a NEW `TestStand` instance (deep-copied)
         with solved pressures and computed mass flows written into the relevant components.
-        If ambient pressure is available (via `Pamb` argument or `self.Ambient.p`), it also
+        If ambient pressure is available (via `self.Ambient.p`), it also
         computes nozzle thrust using RocketCEA Cf.
 
         Parameters
@@ -223,10 +256,6 @@ class TestStand:
             Root-finder tolerance for SciPy `root(method="hybr")`. Default 1e-9.
         maxfev : int or None, optional
             Maximum function evaluations for the solver. If None, SciPy default.
-        Pamb : float or None, optional
-            Ambient/back pressure [Pa] used only for thrust computation. If None, this
-            method will try to use `self.Ambient.p` if it exists; otherwise thrust is
-            not computed.
 
         Returns
         -------
@@ -293,10 +322,15 @@ class TestStand:
             inj_ox_mdot = incompressible_CdA_equation(P_inj_ox, Pc, rho_ox, inj_CdA_ox)
 
             # Guard MR
-            if inj_fuel_mdot <= 0:
-                MR = 1e12
-            else:
-                MR = inj_ox_mdot / inj_fuel_mdot
+            # Reject non-physical injector flows before calling CEA
+            if inj_fuel_mdot <= 0 or inj_ox_mdot <= 0:
+                return np.array([1e12, 1e12, 1e12], dtype=float)
+
+            MR = inj_ox_mdot / inj_fuel_mdot
+
+            # Also keep MR in a sane band for CEA 
+            if not (0.5 <= MR <= 6.0):
+                return np.array([1e12, 1e12, 1e12], dtype=float)
 
             # Use the correct function name in your codebase:
             # If your helper is named choked_mass_flow, use that.
@@ -363,18 +397,170 @@ class TestStand:
         if hasattr(solved.MainChamber, "MR"):
             solved.MainChamber.MR = MR_sol
 
+        solved.FuelInjector.stiffness = (P_inj_f_sol - Pc_sol) / Pc_sol
+        solved.OxInjector.stiffness = (P_inj_ox_sol - Pc_sol) / Pc_sol
+
         # Nozzle state
         solved.TCA.mdot = solved_fuel_mdot + solved_ox_mdot
 
-        # Thrust (optional)
-        if Pamb is None:
-            if hasattr(self, "Ambient") and hasattr(self.Ambient, "p"):
-                Pamb = float(self.Ambient.p)
-
-        if Pamb is not None:
-            solved.TCA.F = choked_nozzle_thrust(
-                Pc_sol, MR_sol, solved.TCA.At, float(Pamb),
-                solved.TCA.eps, solved.TCA.eta_cf, solved.TCA.nfz, cea_obj
-            )
+        solved.TCA.F = choked_nozzle_thrust(
+            Pc_sol, MR_sol, solved.TCA.At, self.Ambient.p,
+            solved.TCA.eps, solved.TCA.eta_cf, solved.TCA.nfz, cea_obj
+        )
 
         return solved
+    
+
+
+
+    def solve_with_balance(
+        self,
+        balance: Balance,
+        *,
+        x0: list[float] | None = None,
+        max_iter: int = 60,
+        bracket_expand: int = 10,
+        fail_penalty: float | None = None,   # kept for compatibility; not required for robust mode
+        bracket_samples: int = 8,            # NEW: try multiple points to find solvable bracket
+    ) -> "TestStand":
+        """
+        Applies a Balance (1 knob ↔ 1 target output) using bisection around steady_state().
+
+        Robust features:
+        - If steady_state fails at bounds, we scan within bounds to find solvable points.
+        - Warm-start: Re-uses last successful solution as x0 for next evaluations.
+        """
+        lo, hi = map(float, balance.bounds)
+        if not (lo > 0 and hi > 0 and hi > lo):
+            raise ValueError("balance.bounds must be (lo, hi) with 0 < lo < hi.")
+
+        base = copy.deepcopy(self)
+
+        # Warm-start storage
+        last_x0: list[float] | None = copy.deepcopy(x0)
+
+        def _extract_x0(solved_ts: "TestStand") -> list[float]:
+            # These attributes MUST exist in your components
+            return [
+                float(solved_ts.FuelInjectorManifold.p),
+                float(solved_ts.OxInjectorManifold.p),
+                float(solved_ts.MainChamber.p),
+            ]
+
+        def try_err_at(knob: float) -> tuple[bool, float, "TestStand" | None]:
+            """
+            Returns (ok, err, solved_ts).
+            ok=False if steady_state fails.
+            """
+            nonlocal last_x0
+            ts = copy.deepcopy(base)
+            balance.tune_set(ts, float(knob))
+            try:
+                solved = ts.steady_state(x0=last_x0)
+                # update warm-start
+                last_x0 = _extract_x0(solved)
+
+                y = float(balance.measure_fn(solved))
+                return True, (y - float(balance.target)), solved
+            except Exception:
+                return False, float("nan"), None
+
+        # ------------------------------------------------------------
+        # 1) Find a valid bracket [a,b] such that err(a)*err(b) <= 0
+        # ------------------------------------------------------------
+        def find_bracket(lo: float, hi: float) -> tuple[float, float, float, float]:
+            # Try endpoints first
+            ok_lo, f_lo, _ = try_err_at(lo)
+            ok_hi, f_hi, _ = try_err_at(hi)
+
+            # If both endpoints solvable and bracketed, done
+            if ok_lo and ok_hi and (f_lo * f_hi <= 0):
+                return lo, hi, f_lo, f_hi
+
+            # Otherwise, scan interior points to find two solvable points with sign change
+            xs = np.linspace(lo, hi, bracket_samples)
+            vals: list[tuple[float, float]] = []
+            for x in xs:
+                ok, fx, _ = try_err_at(float(x))
+                if ok and np.isfinite(fx):
+                    vals.append((float(x), float(fx)))
+
+            # Need at least two solvable points
+            if len(vals) < 2:
+                raise RuntimeError(
+                    "Could not find ANY solvable points within balance bounds.\n"
+                    f"{balance.describe()}\n"
+                    "This usually means the bounds are too extreme or x0 is too poor."
+                )
+
+            # Find any adjacent pair with sign change
+            vals.sort(key=lambda t: t[0])
+            for (x1, f1), (x2, f2) in zip(vals, vals[1:]):
+                if f1 * f2 <= 0:
+                    return x1, x2, f1, f2
+
+            # If no sign change among solvable samples, we are not bracketed
+            # Provide diagnostics to the user (min/max error)
+            fs = [f for _, f in vals]
+            raise RuntimeError(
+                "Could not bracket target within balance bounds using solvable points.\n"
+                f"{balance.describe()}\n"
+                f"Solvable sample error range: min={min(fs):.6e}, max={max(fs):.6e}\n"
+                "Try widening bounds or choose a different tuning knob."
+            )
+
+        # Expand bounds if needed (optional)
+        expands = 0
+        cur_lo, cur_hi = lo, hi
+        while True:
+            try:
+                a, b, f_a, f_b = find_bracket(cur_lo, cur_hi)
+                break
+            except RuntimeError as e:
+                expands += 1
+                if expands > bracket_expand:
+                    raise
+                cur_lo *= 0.5
+                cur_hi *= 2.0
+
+        # ------------------------------------------------------------
+        # 2) Bisection using robust evaluations + warm-start
+        # ------------------------------------------------------------
+        for _ in range(max_iter):
+            mid = 0.5 * (a + b)
+
+            ok_m, f_m, solved_m = try_err_at(mid)
+            if not ok_m:
+                # If mid is unsolvable, nudge slightly toward the side that *was* solvable
+                # (simple, robust)
+                mid = 0.5 * (mid + a)
+                ok_m, f_m, solved_m = try_err_at(mid)
+                if not ok_m:
+                    mid = 0.5 * (mid + b)
+                    ok_m, f_m, solved_m = try_err_at(mid)
+                    if not ok_m:
+                        raise RuntimeError(
+                            "steady_state failed repeatedly near midpoint during balancing.\n"
+                            f"{balance.describe()}\n"
+                            f"Current bracket: [{a:.3e}, {b:.3e}]"
+                        )
+
+            if abs(f_m) < float(balance.tol):
+                # solved_m is already a solved TestStand at this knob
+                return solved_m  # type: ignore
+
+            # Keep the side with sign change
+            if f_a * f_m <= 0:
+                b, f_b = mid, f_m
+            else:
+                a, f_a = mid, f_m
+
+        # Best effort: return last midpoint solve
+        ok_m, f_m, solved_m = try_err_at(0.5 * (a + b))
+        if ok_m and solved_m is not None:
+            return solved_m
+        raise RuntimeError(
+            "Balance hit max_iter and could not produce a final solved state.\n"
+            f"{balance.describe()}\n"
+            f"Final bracket: [{a:.3e}, {b:.3e}]"
+        )
