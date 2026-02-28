@@ -108,7 +108,6 @@ Pc_balance = Balance(
 solved = HETS.solve_with_balance(Pc_balance)
 
 
-
 F_balance = Balance(
     tune="TCA.At",
     measure="TCA.F",
@@ -118,7 +117,6 @@ F_balance = Balance(
 )
 
 solved = HETS.solve_with_balance(F_balance)
-
 
 
 MR_balance = Balance(
@@ -131,9 +129,6 @@ MR_balance = Balance(
 solved = HETS.solve_with_balance(MR_balance)
 
 
-#print(solved)
-
-
 FuelStiffness20 = Balance(
     tune="TCA.At",
     measure="FuelInjector.stiffness",
@@ -144,10 +139,6 @@ FuelStiffness20 = Balance(
 )
 
 solved = HETS.solve_with_balance(FuelStiffness20)
-'''print(solved)
-print("Fuel stiffness %:", solved.FuelInjector.stiffness)
-print("At:", solved.TCA.At)'''
-
 
 
 mdot_5 = Balance(
@@ -174,4 +165,8 @@ FuelStiffness20 = Balance(
 )
 
 solved = HETS.solve_with_balance(FuelStiffness20)
+
+
+thrust_balance = Balance(tune = 'OxThrottleValve.CdA', 
+                         measure = 'TCA.')
 print(solved.__str__(units="US"))

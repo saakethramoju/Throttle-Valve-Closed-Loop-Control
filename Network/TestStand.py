@@ -32,7 +32,7 @@ class TestStand:
         Tanks holding propellants, providing upstream pressure and density.
         Expected attributes used here include: `.p` [Pa], `.rho` [kg/m^3], and `.propellant` (name).
     FuelRunline, OxRunline : Line
-        Feed lines. 
+        Feed lines. s
     FuelThrottleValve, OxThrottleValve : Valve
         Throttle elements providing system CdA on each side.
         Expected attribute: `.CdA` [m^2].
@@ -53,7 +53,41 @@ class TestStand:
     -----
     - This class is designed so you can keep an "unsolved" configuration `A` and generate a solved
       configuration `B` without mutating `A`.
+    
+    - If, for any reason, the layout of TestStand needs to be altered (whether a new volume node needs
+      to be added, or the entire system needs to be reconfigured), because this code is not entirely 
+      modular, several keys items must be modified:
+
+      1) Any hardcoded attributes references (e.g. self.FuelTank.p, self.MainChamber.MR) need to be
+         modified in the class and the residual function.
+    
+      2) The number of residuals and iteration variables in the residual function should be altered.
+         Currently, len(STEADY_STATE_X0_PATHS) == 3 is used enfore three iteration variables, and
+         hence, three residuals. Make sure to alter this guarding code.
+
+      3) STEADY_STATE_X0_PATHS must be updated. The order of the list matters! STEADY_STATE_X0_PATHS
+         tells the solver how many variables are iterated on. The order corresponds to the iteration
+         variables in the residual function. STEADY_STATE_X0_PATHS can be found above __init__().
+
+      4) __str__ and __repr__ are configuration dependent.
+
+    - Balance.py should agnostic to layout changes, unless the way that component attributes are 
+      accessed changes (e.g. FuelSide.Tank.p instead of FuelTank.p)
+
+    - solve_with_balance() should also continue to be generic, working for most any layout changes,
+      as long as there is a steady_state() function that accepts x0, a get_x0(), and a solved_x0().
+      Make sure to also update the residual function and STEADY_STATE_X0_PATHS, and everything should
+      be fine.
+        
     """
+
+
+    # Order matters: MUST match the unknown ordering used in residual(x)
+    STEADY_STATE_X0_PATHS = [
+        "FuelInjectorManifold.p",
+        "OxInjectorManifold.p",
+        "MainChamber.p",
+    ]
 
     def __init__(self, name: str,
                  FuelTank: Tank, OxTank: Tank,
@@ -218,6 +252,42 @@ class TestStand:
         )
 
 
+    @classmethod
+    def _get_attr_by_path(cls, obj, path: str) -> float:
+        """
+        Resolve a dotted path like 'FuelInjectorManifold.p' on obj.
+        Only supports 2-level paths to match your Balance style.
+        """
+        parts = path.split(".")
+        if len(parts) != 2:
+            raise ValueError(f"Expected 'Object.attr' path, got {path!r}")
+        comp, attr = parts
+        return float(getattr(getattr(obj, comp), attr))
+
+
+    @classmethod
+    def _set_attr_by_path(cls, obj, path: str, value: float) -> None:
+        parts = path.split(".")
+        if len(parts) != 2:
+            raise ValueError(f"Expected 'Object.attr' path, got {path!r}")
+        comp, attr = parts
+        setattr(getattr(obj, comp), attr, float(value))
+
+
+    def get_x0(self) -> list[float]:
+        """
+        Default initial guess for steady_state(), based on STEADY_STATE_X0_PATHS.
+        """
+        return [self._get_attr_by_path(self, p) for p in self.STEADY_STATE_X0_PATHS]
+
+
+    def solved_x0(self) -> list[float]:
+        """
+        Warm-start x0 extracted from a SOLVED TestStand.
+        Uses the same STEADY_STATE_X0_PATHS contract.
+        """
+        return [self._get_attr_by_path(self, p) for p in self.STEADY_STATE_X0_PATHS]
+    
 
 
     def steady_state(
@@ -278,6 +348,16 @@ class TestStand:
         """
 
         # --- Basic validation ---
+
+        if len(self.STEADY_STATE_X0_PATHS) != 3:
+            raise ValueError(
+                "This steady_state() implementation currently solves exactly 3 unknowns "
+                "(FuelInjectorManifold.p, OxInjectorManifold.p, MainChamber.p). "
+                "This likely means the TestStand layout has been altered to include more volume nodes. "
+                "The number of residuals must now be updated. "
+                "Update residual(x) if you change STEADY_STATE_X0_PATHS."
+            )
+        
         if self.TCA.At <= 0:
             raise ValueError("Nozzle throat area At must be > 0.")
         if self.MainChamber.eta_cstar <= 0:
@@ -343,11 +423,14 @@ class TestStand:
             ], dtype=float)
 
         if x0 is None:
-            x0 = [
-                float(self.FuelInjectorManifold.p),
-                float(self.OxInjectorManifold.p),
-                float(self.MainChamber.p)
-            ]
+            x0 = self.get_x0()
+
+        expected = len(self.STEADY_STATE_X0_PATHS)
+        if len(x0) != expected:
+            raise ValueError(
+                f"steady_state expected x0 of length {expected} "
+                f"(matching STEADY_STATE_X0_PATHS), got {len(x0)}."
+            )
 
         options = {"xtol": tol}
         if maxfev is not None:
@@ -422,6 +505,7 @@ class TestStand:
         bracket_expand: int = 10,
         fail_penalty: float | None = None,   # kept for compatibility; not required for robust mode
         bracket_samples: int = 8,            # NEW: try multiple points to find solvable bracket
+        verbose: bool = False
     ) -> "TestStand":
         """
         Applies a Balance (1 knob ↔ 1 target output) using bisection around steady_state().
@@ -437,32 +521,20 @@ class TestStand:
         base = copy.deepcopy(self)
 
         # Warm-start storage
-        last_x0: list[float] | None = copy.deepcopy(x0)
-
-        def _extract_x0(solved_ts: "TestStand") -> list[float]:
-            # These attributes MUST exist in your components
-            return [
-                float(solved_ts.FuelInjectorManifold.p),
-                float(solved_ts.OxInjectorManifold.p),
-                float(solved_ts.MainChamber.p),
-            ]
+        last_x0: list[float] | None = copy.deepcopy(x0) if x0 is not None else base.get_x0()
 
         def try_err_at(knob: float) -> tuple[bool, float, "TestStand" | None]:
-            """
-            Returns (ok, err, solved_ts).
-            ok=False if steady_state fails.
-            """
             nonlocal last_x0
             ts = copy.deepcopy(base)
             balance.tune_set(ts, float(knob))
             try:
                 solved = ts.steady_state(x0=last_x0)
-                # update warm-start
-                last_x0 = _extract_x0(solved)
-
+                last_x0 = solved.solved_x0()   # <-- generic warm-start hook
                 y = float(balance.measure_fn(solved))
                 return True, (y - float(balance.target)), solved
-            except Exception:
+            except Exception as e:
+                if verbose:
+                    print(f"[solve_with_balance] steady_state failed at knob={knob:.3e}: {e}")
                 return False, float("nan"), None
 
         # ------------------------------------------------------------

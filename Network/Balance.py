@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Callable, Tuple, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
-    from TestStand import TestStand
+    from .TestStand import TestStand
 
 
 # Helper Functions:
