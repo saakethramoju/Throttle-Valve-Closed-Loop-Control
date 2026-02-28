@@ -105,7 +105,7 @@ Pc_balance = Balance(
     tol=2000.0,   # Pa (~0.3 psi)
 )
 
-solved = HETS.solve_with_balance(Pc_balance)
+solved = HETS.steady_state_with_balance(Pc_balance)
 
 
 F_balance = Balance(
@@ -116,7 +116,7 @@ F_balance = Balance(
     tol=1.0,            # 1 Newton tolerance
 )
 
-solved = HETS.solve_with_balance(F_balance)
+solved = HETS.steady_state_with_balance(F_balance)
 
 
 MR_balance = Balance(
@@ -126,7 +126,7 @@ MR_balance = Balance(
     bounds=(1e-6, 1e-4),
     tol=1e-5,   #
 )
-solved = HETS.solve_with_balance(MR_balance)
+solved = HETS.steady_state_with_balance(MR_balance)
 
 
 FuelStiffness20 = Balance(
@@ -138,7 +138,7 @@ FuelStiffness20 = Balance(
     name="Tune throat area until fuel injector stiffness = 20%",
 )
 
-solved = HETS.solve_with_balance(FuelStiffness20)
+solved = HETS.steady_state_with_balance(FuelStiffness20)
 
 
 mdot_5 = Balance(
@@ -150,7 +150,7 @@ mdot_5 = Balance(
     name="Tune fuel throttle until total mdot = 5 kg/s",
 )
 
-solved = HETS.solve_with_balance(mdot_5)
+solved = HETS.steady_state_with_balance(mdot_5)
 
 
 FuelStiffness20 = Balance(
@@ -164,9 +164,6 @@ FuelStiffness20 = Balance(
     name="Tune throat until fuel injector stiffness = 20%",
 )
 
-solved = HETS.solve_with_balance(FuelStiffness20)
+solved = HETS.steady_state_with_balance(FuelStiffness20)
 
-
-thrust_balance = Balance(tune = 'OxThrottleValve.CdA', 
-                         measure = 'TCA.')
 print(solved.__str__(units="US"))
