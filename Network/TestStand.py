@@ -74,7 +74,7 @@ class TestStand:
     - Balance.py should agnostic to layout changes, unless the way that component attributes are 
       accessed changes (e.g. FuelSide.Tank.p instead of FuelTank.p)
 
-    - solve_with_balance() should also continue to be generic, working for most any layout changes,
+    - steady_state_with_balance() should also continue to be generic, working for most any layout changes,
       as long as there is a steady_state() function that accepts x0, a get_x0(), and a solved_x0().
       Make sure to also update the residual function and STEADY_STATE_X0_PATHS, and everything should
       be fine.
@@ -112,6 +112,10 @@ class TestStand:
         self.MainChamber = MainChamber
         self.TCA = TCA
         self.Ambient = Ambient
+
+        fuel_name = self.FuelTank.propellant
+        ox_name   = self.OxTank.propellant
+        self._cea_obj = create_CEA_object(fuel_name, ox_name)
 
     def __repr__(self) -> str:
         return f"TestStand (name={self.name}, FuelTank={self.FuelTank!r}, OxTank={self.OxTank!r}, MainChamber={self.MainChamber!r}, TCA={self.TCA!r})"
@@ -373,7 +377,7 @@ class TestStand:
 
         fuel_name = self.FuelTank.propellant
         ox_name = self.OxTank.propellant
-        cea_obj = create_CEA_object(fuel_name, ox_name)
+        cea_obj = self._cea_obj
 
         P_tank_f = float(self.FuelTank.p)
         P_tank_ox = float(self.OxTank.p)
@@ -495,7 +499,7 @@ class TestStand:
     
 
 
-    def solve_steady_state_with_balance(
+    def steady_state_with_balance(
         self,
         balance: Balance,
         *,
