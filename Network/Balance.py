@@ -7,9 +7,16 @@ if TYPE_CHECKING:
     from .TestStand import TestStand
 
 
+
 # Helper Functions:
 
 def _split_path(path: str) -> tuple[str, str]:
+    """
+    Split a dotted attribute path of the form "Object.attr"
+    into ("Object", "attr").
+
+    Raises ValueError if the path is not exactly two levels.
+    """
     parts = path.split(".")
     if len(parts) != 2:
         raise ValueError(
@@ -19,6 +26,16 @@ def _split_path(path: str) -> tuple[str, str]:
 
 
 def _make_tune_set(path: str) -> Callable[["TestStand", float], None]:
+    """
+    Build a setter function for a tuning knob.
+
+    Given a path "Object.attr", returns a callable:
+
+        setter(teststand, value)
+
+    that sets:
+        teststand.Object.attr = float(value)
+    """
     obj_name, attr = _split_path(path)
 
     def _set(ts: "TestStand", value: float) -> None:
@@ -28,6 +45,16 @@ def _make_tune_set(path: str) -> Callable[["TestStand", float], None]:
 
 
 def _make_measure_attr(path: str) -> Callable[["TestStand"], float]:
+    """
+    Build a getter function for a measured quantity.
+
+    Given a path "Object.attr", returns a callable:
+
+        getter(teststand) -> float
+
+    that evaluates and returns:
+        float(teststand.Object.attr)
+    """
     obj_name, attr = _split_path(path)
 
     def _get(ts: "TestStand") -> float:
@@ -36,28 +63,106 @@ def _make_measure_attr(path: str) -> Callable[["TestStand"], float]:
     return _get
 
 
-
 # Balance class
-
 @dataclass(frozen=True)
 class Balance:
     """
-    Beginner-friendly balance object (no shorthand keywords).
+        Balance specification object used by TestStand.solve_with_balance().
 
-    Rules:
-    - tune must be "Object.attr"  (e.g., "OxThrottleValve.CdA", "TCA.At")
-    - measure must be "Object.attr" (e.g., "MainChamber.p", "MainChamber.MR", "TCA.F")
-      OR an advanced callable(solved_ts)->float.
+        A Balance fully defines a one-dimensional tuning problem of the form:
 
-    Example:
-        Balance(
-            tune="OxThrottleValve.CdA",
-            measure="MainChamber.MR",
-            target=2.0,
-            bounds=(1e-10, 1e-4),
-            tol=1e-5,
-        )
-    """
+            "Adjust <tune> until <measure> == target"
+
+        Every field in this class is logically required to define a complete,
+        well-posed balance problem. Even though some parameters provide defaults,
+        they are conceptually required components of the tuning definition.
+
+        Required Inputs
+        ---------------
+        tune : str
+            REQUIRED.
+            Dotted attribute path of the form "Object.attr" identifying the
+            parameter to be adjusted.
+
+            Examples:
+                "OxThrottleValve.CdA"
+                "FuelThrottleValve.CdA"
+                "TCA.At"
+
+            This attribute must exist on the TestStand instance being solved.
+
+        measure : str OR callable
+            REQUIRED.
+            Defines what quantity will be evaluated after each steady-state solve.
+
+            Option 1 (standard usage):
+                A dotted attribute path "Object.attr" that exists on the SOLVED
+                TestStand instance.
+
+                Examples:
+                    "MainChamber.p"
+                    "MainChamber.MR"
+                    "TCA.F"
+                    "FuelInjector.stiffness"
+
+            Option 2 (advanced usage):
+                A callable:
+
+                    measure_fn(solved_teststand) -> float
+
+                This allows arbitrary expressions (ratios, percentages, multi-variable
+                functions, etc.).
+
+        target : float
+            REQUIRED.
+            The desired value of the measured quantity.
+
+        bounds : (float, float)
+            REQUIRED.
+            Lower and upper bounds for the tuning parameter.
+            Must satisfy: 0 < lower < upper.
+
+            The solver will search only within this interval.
+
+        tol : float
+            REQUIRED.
+            Convergence tolerance applied to:
+
+                abs(measure - target)
+
+            Balancing stops when the measured value is within this tolerance.
+
+        name : str
+            REQUIRED.
+            Descriptive name for the balance. Used for logging, debugging,
+            and reporting.
+
+            If not explicitly provided, a name is automatically generated,
+            but conceptually every Balance should have a descriptive label.
+
+        Design Notes
+        ------------
+        • Balance does NOT perform solving.
+        It only describes WHAT should be tuned and WHAT condition defines success.
+
+        • Balance is layout-agnostic. It only requires that the provided
+        attribute paths exist on the TestStand object passed to
+        solve_with_balance().
+
+        Example
+        -------
+            MR_balance = Balance(
+                tune="OxThrottleValve.CdA",
+                measure="MainChamber.MR",
+                target=2.0,
+                bounds=(1e-10, 1e-4),
+                tol=1e-5,
+                name="MR Control"
+            )
+
+        This defines the problem:
+            "Adjust OxThrottleValve.CdA until MainChamber.MR equals 2.0"
+        """
 
     tune: str
     measure: Union[str, Callable[["TestStand"], float]]

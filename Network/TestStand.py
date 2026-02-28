@@ -495,41 +495,136 @@ class TestStand:
     
 
 
-
-    def solve_with_balance(
+    def solve_steady_state_with_balance(
         self,
         balance: Balance,
         *,
         x0: list[float] | None = None,
         max_iter: int = 60,
         bracket_expand: int = 10,
-        fail_penalty: float | None = None,   # kept for compatibility; not required for robust mode
-        bracket_samples: int = 8,            # NEW: try multiple points to find solvable bracket
+        fail_penalty: float | None = None,   # kept for compatibility; currently unused
+        bracket_samples: int = 8,
         verbose: bool = False
     ) -> "TestStand":
         """
-        Applies a Balance (1 knob ↔ 1 target output) using bisection around steady_state().
+        Solve a 1D "balance" problem by tuning a single scalar knob until a target
+        output is met, using repeated steady-state solves and bisection.
 
-        Robust features:
-        - If steady_state fails at bounds, we scan within bounds to find solvable points.
-        - Warm-start: Re-uses last successful solution as x0 for next evaluations.
+        Conceptually, this finds a knob value k such that:
+
+            measure_fn( steady_state(TestStand with knob=k) ) ≈ target
+
+        where the Balance object defines:
+        - what attribute to tune (balance.tune_set)
+        - what quantity to measure (balance.measure_fn)
+        - the target value (balance.target)
+        - the allowable knob search bounds (balance.bounds)
+        - the convergence tolerance on the measurement error (balance.tol)
+
+        Method Overview
+        ---------------
+        1) Bracketing:
+        Attempts to find two knob values [a, b] within bounds such that the signed
+        error changes sign:
+
+            err(k) = measure_fn(solved_ts(k)) - target
+            err(a) * err(b) <= 0
+
+        - First tries the endpoints (lo, hi).
+        - If that fails, scans `bracket_samples` evenly spaced points in [lo, hi]
+            and looks for a sign change between solvable points.
+        - If bracketing still fails, optionally expands the bounds outward up to
+            `bracket_expand` times (lo *= 0.5, hi *= 2.0) and retries.
+
+        2) Bisection:
+        With a valid bracket [a, b], repeatedly bisects:
+            mid = (a + b)/2
+        evaluates err(mid), and keeps the half-interval that preserves the sign
+        change. Stops when |err(mid)| < balance.tol or after `max_iter`.
+
+        Robustness Features
+        -------------------
+        - Warm-starting:
+        Each successful solve updates `last_x0` using `solved.solved_x0()`.
+        This makes subsequent steady_state() calls converge faster and more reliably.
+        - Handling unsolvable midpoints:
+        If steady_state fails at the midpoint, the algorithm nudges the evaluation
+        point toward a solvable side (mid->(mid+a)/2, then mid->(mid+b)/2).
+
+        Parameters
+        ----------
+        balance : Balance
+            Defines the knob to tune, measurement to evaluate, target value,
+            knob bounds, and tolerance.
+
+        x0 : list[float] | None, keyword-only
+            Initial guess passed into steady_state() on the first evaluation.
+            If None, uses `self.get_x0()`.
+
+        max_iter : int, keyword-only
+            Maximum number of bisection iterations after a bracket is found.
+
+        bracket_expand : int, keyword-only
+            Number of times the [lo, hi] bounds may be expanded outward if a valid
+            sign-changing bracket cannot be found initially.
+
+        fail_penalty : float | None, keyword-only
+            Currently unused (kept for compatibility). If you later decide to treat
+            steady_state failures as a large signed error instead of skipping them,
+            this value could be used as the magnitude of that penalty.
+
+        bracket_samples : int, keyword-only
+            Number of evenly spaced sample points inside [lo, hi] used to find a
+            sign-changing bracket when endpoints are not sufficient.
+
+        verbose : bool, keyword-only
+            If True, prints diagnostic information when steady_state fails at a knob.
+
+        Returns
+        -------
+        TestStand
+            A NEW solved TestStand instance corresponding to the knob value that
+            satisfies the target within tolerance (or best-effort if max_iter reached).
+
+        Raises
+        ------
+        ValueError
+            If the balance bounds are invalid.
+
+        RuntimeError
+            If no solvable bracketing points can be found, if the target cannot be
+            bracketed (no sign change), or if repeated midpoint evaluations fail.
+
+        Notes
+        -----
+        - This routine assumes the measured output changes "reasonably" with the knob.
+        Bisection requires that the solution be bracketable (i.e., the error crosses 0).
+        - The original TestStand object is not mutated; all knob evaluations operate
+        on deep-copied versions of `self`.
         """
         lo, hi = map(float, balance.bounds)
         if not (lo > 0 and hi > 0 and hi > lo):
             raise ValueError("balance.bounds must be (lo, hi) with 0 < lo < hi.")
 
         base = copy.deepcopy(self)
+        tol_y = float(balance.tol)
 
         # Warm-start storage
         last_x0: list[float] | None = copy.deepcopy(x0) if x0 is not None else base.get_x0()
 
         def try_err_at(knob: float) -> tuple[bool, float, "TestStand" | None]:
+            """
+            Evaluate the signed error at a given knob value.
+
+            Returns (ok, err, solved_ts):
+            ok=False if steady_state fails at this knob.
+            """
             nonlocal last_x0
             ts = copy.deepcopy(base)
             balance.tune_set(ts, float(knob))
             try:
                 solved = ts.steady_state(x0=last_x0)
-                last_x0 = solved.solved_x0()   # <-- generic warm-start hook
+                last_x0 = solved.solved_x0()  # warm-start hook
                 y = float(balance.measure_fn(solved))
                 return True, (y - float(balance.target)), solved
             except Exception as e:
@@ -537,19 +632,16 @@ class TestStand:
                     print(f"[solve_with_balance] steady_state failed at knob={knob:.3e}: {e}")
                 return False, float("nan"), None
 
-        # ------------------------------------------------------------
-        # 1) Find a valid bracket [a,b] such that err(a)*err(b) <= 0
-        # ------------------------------------------------------------
         def find_bracket(lo: float, hi: float) -> tuple[float, float, float, float]:
-            # Try endpoints first
+            """
+            Find (a, b, f_a, f_b) with solvable endpoints and f_a * f_b <= 0.
+            """
             ok_lo, f_lo, _ = try_err_at(lo)
             ok_hi, f_hi, _ = try_err_at(hi)
 
-            # If both endpoints solvable and bracketed, done
             if ok_lo and ok_hi and (f_lo * f_hi <= 0):
                 return lo, hi, f_lo, f_hi
 
-            # Otherwise, scan interior points to find two solvable points with sign change
             xs = np.linspace(lo, hi, bracket_samples)
             vals: list[tuple[float, float]] = []
             for x in xs:
@@ -557,7 +649,6 @@ class TestStand:
                 if ok and np.isfinite(fx):
                     vals.append((float(x), float(fx)))
 
-            # Need at least two solvable points
             if len(vals) < 2:
                 raise RuntimeError(
                     "Could not find ANY solvable points within balance bounds.\n"
@@ -565,14 +656,11 @@ class TestStand:
                     "This usually means the bounds are too extreme or x0 is too poor."
                 )
 
-            # Find any adjacent pair with sign change
             vals.sort(key=lambda t: t[0])
             for (x1, f1), (x2, f2) in zip(vals, vals[1:]):
                 if f1 * f2 <= 0:
                     return x1, x2, f1, f2
 
-            # If no sign change among solvable samples, we are not bracketed
-            # Provide diagnostics to the user (min/max error)
             fs = [f for _, f in vals]
             raise RuntimeError(
                 "Could not bracket target within balance bounds using solvable points.\n"
@@ -581,30 +669,24 @@ class TestStand:
                 "Try widening bounds or choose a different tuning knob."
             )
 
-        # Expand bounds if needed (optional)
         expands = 0
         cur_lo, cur_hi = lo, hi
         while True:
             try:
                 a, b, f_a, f_b = find_bracket(cur_lo, cur_hi)
                 break
-            except RuntimeError as e:
+            except RuntimeError:
                 expands += 1
                 if expands > bracket_expand:
                     raise
                 cur_lo *= 0.5
                 cur_hi *= 2.0
 
-        # ------------------------------------------------------------
-        # 2) Bisection using robust evaluations + warm-start
-        # ------------------------------------------------------------
         for _ in range(max_iter):
             mid = 0.5 * (a + b)
 
             ok_m, f_m, solved_m = try_err_at(mid)
             if not ok_m:
-                # If mid is unsolvable, nudge slightly toward the side that *was* solvable
-                # (simple, robust)
                 mid = 0.5 * (mid + a)
                 ok_m, f_m, solved_m = try_err_at(mid)
                 if not ok_m:
@@ -617,17 +699,14 @@ class TestStand:
                             f"Current bracket: [{a:.3e}, {b:.3e}]"
                         )
 
-            if abs(f_m) < float(balance.tol):
-                # solved_m is already a solved TestStand at this knob
+            if abs(f_m) < tol_y:
                 return solved_m  # type: ignore
 
-            # Keep the side with sign change
             if f_a * f_m <= 0:
                 b, f_b = mid, f_m
             else:
                 a, f_a = mid, f_m
 
-        # Best effort: return last midpoint solve
         ok_m, f_m, solved_m = try_err_at(0.5 * (a + b))
         if ok_m and solved_m is not None:
             return solved_m
