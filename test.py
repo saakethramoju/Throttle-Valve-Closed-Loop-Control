@@ -1,9 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from Utilities.PlottingUtilities import set_winplot_dark
+from Utilities import set_winplot_dark, solve_system_CdAs
 from Physics import PA_PER_PSI, M2_PER_IN2, N_PER_LBF
 from Network.Components import *
 from Network import TestStand, Balance
+from scipy.optimize import root
 # -----------------------------
 # Build baseline test stand
 # -----------------------------
@@ -37,6 +38,22 @@ HETS = TestStand(
     Chamber, TCA, Atmosphere
 )
 
+
+Pc_target = 200 * PA_PER_PSI
+MR_target = 2.3
+
+CdA_fuel, CdA_ox, solved = solve_system_CdAs(
+    HETS,
+    Pc_target = Pc_target,
+    MR_target = MR_target,
+    tol = 1e-9,
+    verbose = False
+)
+
+print(solved.__str__(units="US"))
+
+
+'''
 # -----------------------------
 # Sweep throat area and solve
 # -----------------------------
@@ -93,16 +110,20 @@ plt.grid(True, alpha=0.6)
 plt.tight_layout()
 
 #plt.show()
+'''
 
 
 
 
+
+'''
 Pc_balance = Balance(
     tune="TCA.At",
     measure="MainChamber.p",
     target=300 * PA_PER_PSI,
     bounds=(4 * M2_PER_IN2, 8 * M2_PER_IN2),
     tol=2000.0,   # Pa (~0.3 psi)
+    name="Balance At until Pc = 300 psia"
 )
 
 solved = HETS.steady_state_with_balance(Pc_balance)
@@ -116,7 +137,7 @@ F_balance = Balance(
     tol=1.0,            # 1 Newton tolerance
 )
 
-solved = HETS.steady_state_with_balance(F_balance)
+#solved = HETS.steady_state_with_balance(F_balance)
 
 
 MR_balance = Balance(
@@ -126,7 +147,7 @@ MR_balance = Balance(
     bounds=(1e-6, 1e-4),
     tol=1e-5,   #
 )
-solved = HETS.steady_state_with_balance(MR_balance)
+#solved = HETS.steady_state_with_balance(MR_balance)
 
 
 FuelStiffness20 = Balance(
@@ -138,7 +159,7 @@ FuelStiffness20 = Balance(
     name="Tune throat area until fuel injector stiffness = 20%",
 )
 
-solved = HETS.steady_state_with_balance(FuelStiffness20)
+#solved = HETS.steady_state_with_balance(FuelStiffness20)
 
 
 mdot_5 = Balance(
@@ -150,7 +171,7 @@ mdot_5 = Balance(
     name="Tune fuel throttle until total mdot = 5 kg/s",
 )
 
-solved = HETS.steady_state_with_balance(mdot_5)
+#solved = HETS.steady_state_with_balance(mdot_5)
 
 
 FuelStiffness20 = Balance(
@@ -164,6 +185,9 @@ FuelStiffness20 = Balance(
     name="Tune throat until fuel injector stiffness = 20%",
 )
 
-solved = HETS.steady_state_with_balance(FuelStiffness20)
+#solved = HETS.steady_state_with_balance(FuelStiffness20)
 
 print(solved.__str__(units="US"))
+'''
+
+

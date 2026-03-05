@@ -7,10 +7,10 @@ from scipy.optimize import root
 from .Components import *
 from Utilities import choked_nozzle_thrust, choked_nozzle_mass_flow, create_CEA_object
 from Utilities import incompressible_CdA_equation
+from Utilities import get_cached_CEA
 from Physics.Constants import *
 
 from .Balance import Balance
-
 
 class TestStand:
     """
@@ -115,7 +115,7 @@ class TestStand:
 
         fuel_name = self.FuelTank.propellant
         ox_name   = self.OxTank.propellant
-        self._cea_obj = create_CEA_object(fuel_name, ox_name)
+        self._cea_obj = get_cached_CEA(fuel_name, ox_name)
 
     def __repr__(self) -> str:
         return f"TestStand (name={self.name}, FuelTank={self.FuelTank!r}, OxTank={self.OxTank!r}, MainChamber={self.MainChamber!r}, TCA={self.TCA!r})"
@@ -719,3 +719,67 @@ class TestStand:
             f"{balance.describe()}\n"
             f"Final bracket: [{a:.3e}, {b:.3e}]"
         )
+    
+
+    def __deepcopy__(self, memo):
+        """
+        Custom deep copy implementation for TestStand.
+
+        This method overrides Python's default deepcopy behavior in order to
+        prevent duplication of the cached RocketCEA object used for combustion
+        property calculations.
+
+        By default, `copy.deepcopy()` attempts to recursively duplicate every
+        attribute of the object. For TestStand instances this would include
+        `_cea_obj`, which represents a RocketCEA thermochemistry interface.
+        These objects are expensive to construct and may not be safe or useful
+        to duplicate.
+
+        Instead, this method performs the following strategy:
+
+        1. Allocate a new uninitialized TestStand instance using `__new__`
+        so that the class constructor (`__init__`) is **not executed**.
+        This avoids recreating the RocketCEA object.
+
+        2. Recursively deepcopy all normal attributes (tanks, valves,
+        manifolds, nozzle, etc.) so that the copied TestStand is
+        completely independent of the original.
+
+        3. Copy the `_cea_obj` attribute **by reference**, not by value.
+        All TestStand copies therefore share the same cached RocketCEA
+        object.
+
+        This behavior ensures that:
+
+        • TestStand copies remain lightweight and fast.
+        • RocketCEA initialization occurs only once per propellant pair.
+        • Steady-state solves and optimization routines that rely on
+        deep copies (such as system design solvers) remain efficient.
+
+
+        ----------------------------------------------------------------------
+        Parameters
+        ----------------------------------------------------------------------
+        memo : dict
+            Internal dictionary used by Python's deepcopy machinery to
+            track objects that have already been copied. This prevents
+            infinite recursion when copying complex object graphs.
+
+
+        ----------------------------------------------------------------------
+        Returns
+        ----------------------------------------------------------------------
+        TestStand
+            A deep copy of the TestStand instance where all components
+            are independent except for the shared `_cea_obj`.
+        """
+        cls = self.__class__
+        result = cls.__new__(cls)     # bypass __init__
+        memo[id(self)] = result
+
+        for k, v in self.__dict__.items():
+            if k == "_cea_obj":
+                setattr(result, k, v)  # keep shared cached object
+            else:
+                setattr(result, k, copy.deepcopy(v, memo))
+        return result
