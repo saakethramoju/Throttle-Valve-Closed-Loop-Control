@@ -8,8 +8,8 @@ from scipy.optimize import root
 # -----------------------------
 # Build baseline test stand
 # -----------------------------
-FuelTank = Tank("Fuel Tank", "RP-1", 450 * PA_PER_PSI, 70/1000, 800)
-OxTank   = Tank("Oxidizer Tank", "LOX", 400 * PA_PER_PSI, 70/1000, 1104)
+FuelTank = Tank("Fuel Tank", "RP-1", 550 * PA_PER_PSI, 70/1000, 800)
+OxTank   = Tank("Oxidizer Tank", "LOX", 500 * PA_PER_PSI, 70/1000, 1104)
 
 FuelRunline = Line("Fuel Runline")
 OxRunline   = Line("Oxidizer Runline")
@@ -17,8 +17,8 @@ OxRunline   = Line("Oxidizer Runline")
 FuelThrottle = Valve("Fuel Throttle Valve", 0.5e-4)
 OxThrottle   = Valve("Oxidizer Throttle Valve", 1e-4)
 
-FuelInjectorManifold = InjectorManifold("Fuel Manifold", 350 * PA_PER_PSI)
-OxInjectorManifold   = InjectorManifold("Oxidizer Manifold", 350 * PA_PER_PSI)
+FuelInjectorManifold = InjectorManifold("Fuel Manifold", 350 * PA_PER_PSI, density=750)
+OxInjectorManifold   = InjectorManifold("Oxidizer Manifold", 350 * PA_PER_PSI, density=1100)
 
 FuelInjector = Orifice("Fuel Injector", 0.5e-4)
 OxInjector   = Orifice("Oxidizer Injector", 1e-4)
@@ -39,19 +39,66 @@ HETS = TestStand(
 )
 
 
-Pc_target = 200 * PA_PER_PSI
-MR_target = 2.3
+# -----------------------------
+# Sweep conditions
+# -----------------------------
+MR_target = 3.0
 
-CdA_fuel, CdA_ox, solved = solve_system_CdAs(
-    HETS,
-    Pc_target = Pc_target,
-    MR_target = MR_target,
-    tol = 1e-9,
-    verbose = False
-)
+Pc_psia = np.linspace(150, 350, 10)
+Pc = Pc_psia * PA_PER_PSI
 
-print(solved.__str__(units="US"))
+CdA_f_list = []
+CdA_ox_list = []
 
+for Pc_i in Pc:
+
+    try:
+        CdA_fuel_sol, CdA_ox_sol, _ = solve_system_CdAs(
+            HETS,
+            Pc_target = Pc_i,
+            MR_target = MR_target,
+            verbose = False
+        )
+
+        CdA_f_list.append(CdA_fuel_sol)
+        CdA_ox_list.append(CdA_ox_sol)
+
+    except Exception:
+        CdA_f_list.append(np.nan)
+        CdA_ox_list.append(np.nan)
+
+
+CdA_f = np.array(CdA_f_list)
+CdA_ox = np.array(CdA_ox_list)
+
+
+# -----------------------------
+# Convert units
+# -----------------------------
+CdA_f_in2 = CdA_f / M2_PER_IN2
+CdA_ox_in2 = CdA_ox / M2_PER_IN2
+
+
+# -----------------------------
+# Plot
+# -----------------------------
+set_winplot_dark()
+
+plt.figure(figsize=(8,5))
+
+plt.plot(Pc_psia, CdA_f_in2, linewidth=2, label="Fuel System CdA")
+plt.plot(Pc_psia, CdA_ox_in2, linewidth=2, label="Ox System CdA")
+
+plt.xlabel("Chamber Pressure (psia)")
+plt.ylabel("System CdA (in²)")
+
+plt.title(f"Required System CdA vs Chamber Pressure\nMR = {MR_target}")
+
+plt.grid(True)
+plt.legend()
+
+plt.tight_layout()
+#plt.show()
 
 '''
 # -----------------------------
@@ -116,7 +163,7 @@ plt.tight_layout()
 
 
 
-'''
+
 Pc_balance = Balance(
     tune="TCA.At",
     measure="MainChamber.p",
@@ -126,7 +173,7 @@ Pc_balance = Balance(
     name="Balance At until Pc = 300 psia"
 )
 
-solved = HETS.steady_state_with_balance(Pc_balance)
+#solved = HETS.steady_state_with_balance(Pc_balance)
 
 
 F_balance = Balance(
@@ -147,7 +194,7 @@ MR_balance = Balance(
     bounds=(1e-6, 1e-4),
     tol=1e-5,   #
 )
-#solved = HETS.steady_state_with_balance(MR_balance)
+solved = HETS.steady_state_with_balance(MR_balance)
 
 
 FuelStiffness20 = Balance(
@@ -188,6 +235,7 @@ FuelStiffness20 = Balance(
 #solved = HETS.steady_state_with_balance(FuelStiffness20)
 
 print(solved.__str__(units="US"))
-'''
+
+
 
 

@@ -5,7 +5,7 @@ import numpy as np
 from scipy.optimize import root
 
 from .Components import *
-from Utilities import choked_nozzle_thrust, choked_nozzle_mass_flow, create_CEA_object
+from Utilities import choked_nozzle_thrust, choked_nozzle_mass_flow
 from Utilities import incompressible_CdA_equation
 from Utilities import get_cached_CEA
 from Physics.Constants import *
@@ -346,6 +346,12 @@ class TestStand:
 
         Notes
         -----
+        - For continuity residuals, the density used for the CdA equation depends on whether 
+          the densities for the injector manifolds are manually set or not. The densities are
+          considered to be manually set if the density is not the default 999.840000001 as given
+          in the component constructor. This feature can be used to account for potential
+          variations in the propellant densities in the injector manifolds, like due to regen 
+          cooling, for example.
         - Feed and injector flows are modeled as incompressible CdA elements.
         - Nozzle mass flow is assumed choked and computed via c* (RocketCEA) and eta_cstar.
         - Ensure Pc/Pamb units match what your RocketCEA wrapper expects.
@@ -381,8 +387,22 @@ class TestStand:
 
         P_tank_f = float(self.FuelTank.p)
         P_tank_ox = float(self.OxTank.p)
-        rho_f = float(self.FuelTank.rho)
-        rho_ox = float(self.OxTank.rho)
+
+        if self.FuelInjectorManifold.rho == 999.840000001:
+            rho_f1 = float(self.FuelTank.rho)
+            rho_f2 = float(self.FuelTank.rho)
+        else:
+            rho_f2 = float(self.FuelInjectorManifold.rho)
+            rho_f1 = (float(self.FuelInjectorManifold.rho) + float(self.FuelTank.rho))/2
+
+        
+        if self.OxInjectorManifold.rho == 999.840000001:
+            rho_ox1 = float(self.OxTank.rho)
+            rho_ox2 = float(self.OxTank.rho)
+        else:
+            rho_ox2 = float(self.OxInjectorManifold.rho)
+            rho_ox1 = (float(self.OxInjectorManifold.rho) + float(self.OxTank.rho))/2
+
 
         sys_CdA_f = float(self.FuelThrottleValve.CdA)
         sys_CdA_ox = float(self.OxThrottleValve.CdA)
@@ -399,11 +419,11 @@ class TestStand:
             if P_inj_f <= 0 or P_inj_ox <= 0 or Pc <= 0:
                 return np.array([1e12, 1e12, 1e12], dtype=float)
 
-            sys_fuel_mdot = incompressible_CdA_equation(P_tank_f, P_inj_f, rho_f, sys_CdA_f)
-            sys_ox_mdot = incompressible_CdA_equation(P_tank_ox, P_inj_ox, rho_ox, sys_CdA_ox)
+            sys_fuel_mdot = incompressible_CdA_equation(P_tank_f, P_inj_f, rho_f1, sys_CdA_f)
+            sys_ox_mdot = incompressible_CdA_equation(P_tank_ox, P_inj_ox, rho_ox1, sys_CdA_ox)
 
-            inj_fuel_mdot = incompressible_CdA_equation(P_inj_f, Pc, rho_f, inj_CdA_f)
-            inj_ox_mdot = incompressible_CdA_equation(P_inj_ox, Pc, rho_ox, inj_CdA_ox)
+            inj_fuel_mdot = incompressible_CdA_equation(P_inj_f, Pc, rho_f2, inj_CdA_f)
+            inj_ox_mdot = incompressible_CdA_equation(P_inj_ox, Pc, rho_ox2, inj_CdA_ox)
 
             # Guard MR
             # Reject non-physical injector flows before calling CEA
@@ -455,8 +475,8 @@ class TestStand:
         solved = copy.deepcopy(self)
 
         # Compute final injector mdots at solved pressures
-        solved_fuel_mdot = incompressible_CdA_equation(P_inj_f_sol, Pc_sol, rho_f, inj_CdA_f)
-        solved_ox_mdot = incompressible_CdA_equation(P_inj_ox_sol, Pc_sol, rho_ox, inj_CdA_ox)
+        solved_fuel_mdot = incompressible_CdA_equation(P_inj_f_sol, Pc_sol, rho_f2, inj_CdA_f)
+        solved_ox_mdot = incompressible_CdA_equation(P_inj_ox_sol, Pc_sol, rho_ox2, inj_CdA_ox)
 
         # Write back mdots
         solved.FuelRunline.mdot = solved_fuel_mdot
@@ -468,11 +488,13 @@ class TestStand:
         # Write back manifold pressures + densities
         solved.FuelInjectorManifold.p = P_inj_f_sol
         if hasattr(solved.FuelInjectorManifold, "rho"):
-            solved.FuelInjectorManifold.rho = rho_f
+            if solved.FuelInjectorManifold.rho == 999.840000001:
+                solved.FuelInjectorManifold.rho = solved.FuelTank.rho
 
         solved.OxInjectorManifold.p = P_inj_ox_sol
         if hasattr(solved.OxInjectorManifold, "rho"):
-            solved.OxInjectorManifold.rho = rho_ox  
+            if solved.OxInjectorManifold.rho == 999.840000001:
+                solved.OxInjectorManifold.rho = solved.OxTank.rho
 
         # Write back injector mdots
         solved.FuelInjector.mdot = solved_fuel_mdot
