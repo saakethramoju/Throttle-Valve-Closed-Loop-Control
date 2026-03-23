@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from Utilities import set_winplot_dark, solve_system_CdAs
+from Utilities import set_winplot_dark, solve_system_CdAs, get_density
 from Physics import PA_PER_PSI, M2_PER_IN2, N_PER_LBF
 from Network.Components import *
 from Network import TestStand, Balance
@@ -8,8 +8,8 @@ from scipy.optimize import root
 # -----------------------------
 # Build baseline test stand
 # -----------------------------
-FuelTank = Tank("Fuel Tank", "RP-1", 550 * PA_PER_PSI, 70/1000, 800)
-OxTank   = Tank("Oxidizer Tank", "LOX", 500 * PA_PER_PSI, 70/1000, 1104)
+FuelTank = Tank("Fuel Tank", "RP-1", 550 * PA_PER_PSI, 70/1000, temperature=300)
+OxTank   = Tank("Oxidizer Tank", "LOX", 500 * PA_PER_PSI, 70/1000, temperature=90)
 
 FuelRunline = Line("Fuel Runline")
 OxRunline   = Line("Oxidizer Runline")
@@ -17,8 +17,8 @@ OxRunline   = Line("Oxidizer Runline")
 FuelThrottle = Valve("Fuel Throttle Valve", 0.5e-4)
 OxThrottle   = Valve("Oxidizer Throttle Valve", 1e-4)
 
-FuelInjectorManifold = InjectorManifold("Fuel Manifold", 350 * PA_PER_PSI, density=750)
-OxInjectorManifold   = InjectorManifold("Oxidizer Manifold", 350 * PA_PER_PSI, density=1100)
+FuelInjectorManifold = InjectorManifold("Fuel Manifold", 350 * PA_PER_PSI, temperature=500)
+OxInjectorManifold   = InjectorManifold("Oxidizer Manifold", 350 * PA_PER_PSI)
 
 FuelInjector = Orifice("Fuel Injector", 0.5e-4)
 OxInjector   = Orifice("Oxidizer Injector", 1e-4)

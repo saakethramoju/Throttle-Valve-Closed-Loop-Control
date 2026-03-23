@@ -121,16 +121,12 @@ class Tank(Volume):
         Tank pressure [Pa].
     volume : float
         Tank volume [m^3].
-    density : float
-        Fluid density within the tank [kg/m^3].
-        Default is 999.840000001 to check if density was manually set or not.
     temperature : float
         Fluid temperature within the tank [K].
     """
-    def __init__(self, name, propellant: str, pressure = 101325, volume = 0.1, density: float = 999.840000001, temperature: float = 300):
+    def __init__(self, name, propellant: str, pressure = 101325, volume = 0.1, temperature: float = 300):
         super().__init__(name, pressure, volume)
         self.propellant = propellant
-        self.rho = density  # kg/m^3
         self.T = temperature # K
 
     def __str__(self):
@@ -154,15 +150,13 @@ class InjectorManifold(Volume):
         Tank pressure [Pa].
     volume : float
         Tank volume [m^3].
-    density : float
-        Fluid density within the manifold [kg/m^3].
-        Default is 999.840000001 to check if density was manually set or not.
     temperature : float
         Fluid temperature within the manifold [K].
+        The default is 300.000001 because it is used to determine if the 
+        temperature was manually set by the user.
     """
-    def __init__(self, name, pressure = 101325, volume = 8e-4, density: float = 999.840000001, temperature: float = 300):
+    def __init__(self, name, pressure = 101325, volume = 8e-4, temperature: float = 300.000001):
         super().__init__(name, pressure, volume)
-        self.rho = density  # kg/m^3
         self.T = temperature # K
 
     def __str__(self):

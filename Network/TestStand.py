@@ -6,7 +6,7 @@ from scipy.optimize import root
 
 from .Components import *
 from Utilities import choked_nozzle_thrust, choked_nozzle_mass_flow
-from Utilities import incompressible_CdA_equation
+from Utilities import incompressible_CdA_equation, get_density
 from Utilities import get_cached_CEA
 from Physics.Constants import *
 
@@ -121,6 +121,7 @@ class TestStand:
         return f"TestStand (name={self.name}, FuelTank={self.FuelTank!r}, OxTank={self.OxTank!r}, MainChamber={self.MainChamber!r}, TCA={self.TCA!r})"
 
 
+
     def __str__(self, units: str = "SI") -> str:
         # Local helpers
         def _fmt_kgps(x):
@@ -149,6 +150,14 @@ class TestStand:
             out += [fmt_row(r) for r in rows]
             return "\n".join(out)
 
+        def _safe_density(fluid_name, pressure, temperature):
+            if fluid_name is None or pressure is None or temperature is None:
+                return None
+            try:
+                return get_density(fluid_name, pressure, temperature)
+            except Exception:
+                return None
+
         # ------------------------
         # Unit system selection
         # ------------------------
@@ -164,6 +173,12 @@ class TestStand:
             def _fmt_force(f):
                 return f"{f:,.2f} N" if f is not None else "—"
 
+            def _fmt_temperature(T):
+                return f"{T:.2f} K" if T is not None else "—"
+
+            def _fmt_density(rho):
+                return f"{rho:.1f} kg/m^3" if rho is not None else "—"
+
         elif units == "US":
             def _fmt_pressure(p):
                 return f"{p / PA_PER_PSI:,.2f} psi" if p is not None else "—"
@@ -173,6 +188,12 @@ class TestStand:
 
             def _fmt_force(f):
                 return f"{f * LBF_PER_N:,.2f} lbf" if f is not None else "—"
+
+            def _fmt_temperature(T):
+                return f"{T * 9.0 / 5.0:.2f} R" if T is not None else "—"
+
+            def _fmt_density(rho):
+                return f"{rho * 0.062428:.3f} lbm/ft^3" if rho is not None else "—"
 
         else:
             raise ValueError("units must be 'SI' or 'US'")
@@ -191,12 +212,21 @@ class TestStand:
         Pc = _get(self.MainChamber, "p")
         Pamb = _get(self.Ambient, "p")
 
-        # Densities (if you store them)
-        rho_f = _get(self.FuelTank, "rho")
-        rho_ox = _get(self.OxTank, "rho")
+        # Temperatures
+        T_tank_f = _get(self.FuelTank, "T")
+        T_tank_ox = _get(self.OxTank, "T")
+        T_inj_f = _get(self.FuelInjectorManifold, "T")
+        T_inj_ox = _get(self.OxInjectorManifold, "T")
 
-        rho_f_man = _get(self.FuelInjectorManifold, "rho")
-        rho_ox_man = _get(self.OxInjectorManifold, "rho")
+        # Fluids / propellants
+        fuel_propellant = getattr(self.FuelTank, "propellant", None)
+        ox_propellant = getattr(self.OxTank, "propellant", None)
+
+        # Densities from CoolProp helper
+        rho_f = _safe_density(fuel_propellant, P_tank_f, T_tank_f)
+        rho_ox = _safe_density(ox_propellant, P_tank_ox, T_tank_ox)
+        rho_f_man = _safe_density(fuel_propellant, P_inj_f, T_inj_f)
+        rho_ox_man = _safe_density(ox_propellant, P_inj_ox, T_inj_ox)
 
         # Nozzle / thrust
         At = _get(self.TCA, "At")
@@ -215,46 +245,46 @@ class TestStand:
 
         # Build tables
         state_rows = [
-            ("Fuel Tank",        _fmt_pressure(P_tank_f),   f"{rho_f:.1f} kg/m^3" if rho_f is not None else "—"),
-            ("Fuel Manifold",    _fmt_pressure(P_inj_f),    f"{rho_f_man:.1f} kg/m^3" if rho_f_man is not None else "—"),
-            ("Ox Tank",          _fmt_pressure(P_tank_ox),  f"{rho_ox:.1f} kg/m^3" if rho_ox is not None else "—"),
-            ("Ox Manifold",      _fmt_pressure(P_inj_ox),   f"{rho_ox_man:.1f} kg/m^3" if rho_ox_man is not None else "—"),
-            ("Chamber",          _fmt_pressure(Pc),         "—"),
-            ("Ambient",          _fmt_pressure(Pamb),       "—"),
+            ("Fuel Tank",     _fmt_pressure(P_tank_f),  _fmt_temperature(T_tank_f),  _fmt_density(rho_f)),
+            ("Fuel Manifold", _fmt_pressure(P_inj_f),   _fmt_temperature(T_inj_f),   _fmt_density(rho_f_man)),
+            ("Ox Tank",       _fmt_pressure(P_tank_ox), _fmt_temperature(T_tank_ox), _fmt_density(rho_ox)),
+            ("Ox Manifold",   _fmt_pressure(P_inj_ox),  _fmt_temperature(T_inj_ox),  _fmt_density(rho_ox_man)),
+            ("Chamber",       _fmt_pressure(Pc),        "—",                          "—"),
+            ("Ambient",       _fmt_pressure(Pamb),      "—",                          "—"),
         ]
 
         flow_rows = [
-            ("Fuel mdot",  _fmt_kgps(mdot_f)),
-            ("Ox mdot",    _fmt_kgps(mdot_ox)),
+            ("Fuel mdot", _fmt_kgps(mdot_f)),
+            ("Ox mdot", _fmt_kgps(mdot_ox)),
             ("Total mdot", _fmt_kgps(mdot_total)),
-            ("MR",   f"{MR:.4f}" if MR is not None else "—"),
+            ("MR", f"{MR:.4f}" if MR is not None else "—"),
             ("Fuel inj stiffness", f"{100.0 * stiff_f:.2f} %" if stiff_f is not None else "—"),
-            ("Ox inj stiffness",   f"{100.0 * stiff_ox:.2f} %" if stiff_ox is not None else "—"),
+            ("Ox inj stiffness", f"{100.0 * stiff_ox:.2f} %" if stiff_ox is not None else "—"),
         ]
 
         geom_rows = [
-            ("At",  _fmt_area(At)),
+            ("At", _fmt_area(At)),
             ("eps", f"{eps:.3f}" if eps is not None else "—"),
-            ("F",   _fmt_force(F)),
+            ("F", _fmt_force(F)),
         ]
 
         cda_rows = [
             ("Fuel throttle CdA", _fmt_area(CdA_f_sys)),
-            ("Ox throttle CdA",   _fmt_area(CdA_ox_sys)),
+            ("Ox throttle CdA", _fmt_area(CdA_ox_sys)),
             ("Fuel injector CdA", _fmt_area(CdA_f_inj)),
-            ("Ox injector CdA",   _fmt_area(CdA_ox_inj)),
+            ("Ox injector CdA", _fmt_area(CdA_ox_inj)),
         ]
 
         # Final report string
         return (
             f"\n================ {self.name} =================\n"
-            f"\n[Pressures / Densities]\n{_table(state_rows, headers=('Node', 'Pressure', 'Density'))}\n"
+            f"\n[Pressures / Temperatures / Densities]\n"
+            f"{_table(state_rows, headers=('Node', 'Pressure', 'Temperature', 'Density'))}\n"
             f"\n[Mass Flow]\n{_table(flow_rows, headers=('Quantity', 'Value'))}\n"
             f"\n[Nozzle / Performance]\n{_table(geom_rows, headers=('Parameter', 'Value'))}\n"
             f"\n[CdA Summary]\n{_table(cda_rows, headers=('Element', 'Value'))}\n"
             f"================================================\n"
         )
-
 
     @classmethod
     def _get_attr_by_path(cls, obj, path: str) -> float:
@@ -348,7 +378,7 @@ class TestStand:
         -----
         - For continuity residuals, the density used for the CdA equation depends on whether 
           the densities for the injector manifolds are manually set or not. The densities are
-          considered to be manually set if the density is not the default 999.840000001 as given
+          considered to be manually set if the temperature is not the default 300.000001 as given
           in the component constructor. This feature can be used to account for potential
           variations in the propellant densities in the injector manifolds, like due to regen 
           cooling, for example.
@@ -374,8 +404,8 @@ class TestStand:
             raise ValueError("MainChamber.eta_cstar must be > 0.")
         if self.FuelTank.p <= 0 or self.OxTank.p <= 0:
             raise ValueError("Tank pressures must be > 0 Pa.")
-        if self.FuelTank.rho <= 0 or self.OxTank.rho <= 0:
-            raise ValueError("Tank densities must be > 0 kg/m^3.")
+        if self.FuelTank.T <= 0 or self.OxTank.T <= 0:
+            raise ValueError("Tank temperatures must be > 0 K.")
         if self.FuelThrottleValve.CdA <= 0 or self.OxThrottleValve.CdA <= 0:
             raise ValueError("Throttle valve CdA values must be > 0.")
         if self.FuelInjector.CdA <= 0 or self.OxInjector.CdA <= 0:
@@ -388,20 +418,32 @@ class TestStand:
         P_tank_f = float(self.FuelTank.p)
         P_tank_ox = float(self.OxTank.p)
 
-        if self.FuelInjectorManifold.rho == 999.840000001:
-            rho_f1 = float(self.FuelTank.rho)
-            rho_f2 = float(self.FuelTank.rho)
+        '''
+        temp_rho_f = float(get_density(fluid_name=fuel_name, 
+                                       pressure=self.FuelTank.p, 
+                                       temperature=self.FuelTank.T))
+        temp_rho_ox = float(get_density(fluid_name=ox_name, 
+                                       pressure=self.OxTank.p, 
+                                       temperature=self.OxTank.T))
+
+        if self.FuelInjectorManifold.T == 300.000001:
+            rho_f1 = temp_rho_f
+            rho_f2 = rho_f1
         else:
-            rho_f2 = float(self.FuelInjectorManifold.rho)
-            rho_f1 = (float(self.FuelInjectorManifold.rho) + float(self.FuelTank.rho))/2
+            rho_f2 = float(get_density(fluid_name=fuel_name, 
+                                       pressure=self.FuelInjectorManifold.p, 
+                                       temperature=self.FuelInjectorManifold.T))
+            rho_f1 = (rho_f2 + temp_rho_f)/2
 
         
-        if self.OxInjectorManifold.rho == 999.840000001:
-            rho_ox1 = float(self.OxTank.rho)
-            rho_ox2 = float(self.OxTank.rho)
+        if self.OxInjectorManifold.T == 300.000001:
+            rho_ox1 = temp_rho_ox
+            rho_ox2 = rho_ox1
         else:
-            rho_ox2 = float(self.OxInjectorManifold.rho)
-            rho_ox1 = (float(self.OxInjectorManifold.rho) + float(self.OxTank.rho))/2
+            rho_ox2 = float(get_density(fluid_name=ox_name, 
+                                       pressure=self.OxInjectorManifold.p, 
+                                       temperature=self.OxInjectorManifold.T))
+            rho_ox1 = (rho_ox2 + temp_rho_ox)/2'''
 
 
         sys_CdA_f = float(self.FuelThrottleValve.CdA)
@@ -418,6 +460,45 @@ class TestStand:
             # Keep solver away from non-physical space
             if P_inj_f <= 0 or P_inj_ox <= 0 or Pc <= 0:
                 return np.array([1e12, 1e12, 1e12], dtype=float)
+
+
+            try:
+                temp_rho_f = float(get_density(
+                    fluid_name=fuel_name,
+                    pressure=P_tank_f,
+                    temperature=self.FuelTank.T
+                ))
+                temp_rho_ox = float(get_density(
+                    fluid_name=ox_name,
+                    pressure=P_tank_ox,
+                    temperature=self.OxTank.T
+                ))
+
+                if self.FuelInjectorManifold.T == 300.000001:
+                    rho_f1 = temp_rho_f
+                    rho_f2 = rho_f1
+                else:
+                    rho_f2 = float(get_density(
+                        fluid_name=fuel_name,
+                        pressure=P_inj_f,
+                        temperature=self.FuelInjectorManifold.T
+                    ))
+                    rho_f1 = 0.5 * (rho_f2 + temp_rho_f)
+
+                if self.OxInjectorManifold.T == 300.000001:
+                    rho_ox1 = temp_rho_ox
+                    rho_ox2 = rho_ox1
+                else:
+                    rho_ox2 = float(get_density(
+                        fluid_name=ox_name,
+                        pressure=P_inj_ox,
+                        temperature=self.OxInjectorManifold.T
+                    ))
+                    rho_ox1 = 0.5 * (rho_ox2 + temp_rho_ox)
+
+            except Exception:
+                return np.array([1e12, 1e12, 1e12], dtype=float)
+
 
             sys_fuel_mdot = incompressible_CdA_equation(P_tank_f, P_inj_f, rho_f1, sys_CdA_f)
             sys_ox_mdot = incompressible_CdA_equation(P_tank_ox, P_inj_ox, rho_ox1, sys_CdA_ox)
@@ -474,9 +555,23 @@ class TestStand:
 
         solved = copy.deepcopy(self)
 
+        if solved.FuelInjectorManifold.T == 300.000001:
+            solved.FuelInjectorManifold.T = solved.FuelTank.T
+
+        if solved.OxInjectorManifold.T == 300.000001:
+            solved.OxInjectorManifold.T = solved.OxTank.T
+
+        rho_f = float(get_density(fluid_name=fuel_name, 
+                                  pressure=P_inj_f_sol, 
+                                  temperature=solved.FuelInjectorManifold.T))
+
+        rho_ox = float(get_density(fluid_name=ox_name, 
+                                  pressure=P_inj_ox_sol, 
+                                  temperature=solved.OxInjectorManifold.T))
+
         # Compute final injector mdots at solved pressures
-        solved_fuel_mdot = incompressible_CdA_equation(P_inj_f_sol, Pc_sol, rho_f2, inj_CdA_f)
-        solved_ox_mdot = incompressible_CdA_equation(P_inj_ox_sol, Pc_sol, rho_ox2, inj_CdA_ox)
+        solved_fuel_mdot = incompressible_CdA_equation(P_inj_f_sol, Pc_sol, rho_f, inj_CdA_f)
+        solved_ox_mdot = incompressible_CdA_equation(P_inj_ox_sol, Pc_sol, rho_ox, inj_CdA_ox)
 
         # Write back mdots
         solved.FuelRunline.mdot = solved_fuel_mdot
@@ -485,16 +580,9 @@ class TestStand:
         solved.FuelThrottleValve.mdot = solved_fuel_mdot
         solved.OxThrottleValve.mdot = solved_ox_mdot
 
-        # Write back manifold pressures + densities
+        # Write back manifold pressures
         solved.FuelInjectorManifold.p = P_inj_f_sol
-        if hasattr(solved.FuelInjectorManifold, "rho"):
-            if solved.FuelInjectorManifold.rho == 999.840000001:
-                solved.FuelInjectorManifold.rho = solved.FuelTank.rho
-
         solved.OxInjectorManifold.p = P_inj_ox_sol
-        if hasattr(solved.OxInjectorManifold, "rho"):
-            if solved.OxInjectorManifold.rho == 999.840000001:
-                solved.OxInjectorManifold.rho = solved.OxTank.rho
 
         # Write back injector mdots
         solved.FuelInjector.mdot = solved_fuel_mdot
