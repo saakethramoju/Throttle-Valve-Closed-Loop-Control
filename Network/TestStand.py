@@ -126,6 +126,9 @@ class TestStand:
         # Local helpers
         def _fmt_kgps(x):
             return f"{x:.4f} kg/s" if x is not None else "—"
+        
+        def _fmt_fluid(f):
+            return f if f is not None else "—"
 
         def _get(obj, attr):
             v = getattr(obj, attr, None)
@@ -245,12 +248,12 @@ class TestStand:
 
         # Build tables
         state_rows = [
-            ("Fuel Tank",     _fmt_pressure(P_tank_f),  _fmt_temperature(T_tank_f),  _fmt_density(rho_f)),
-            ("Fuel Manifold", _fmt_pressure(P_inj_f),   _fmt_temperature(T_inj_f),   _fmt_density(rho_f_man)),
-            ("Ox Tank",       _fmt_pressure(P_tank_ox), _fmt_temperature(T_tank_ox), _fmt_density(rho_ox)),
-            ("Ox Manifold",   _fmt_pressure(P_inj_ox),  _fmt_temperature(T_inj_ox),  _fmt_density(rho_ox_man)),
-            ("Chamber",       _fmt_pressure(Pc),        "—",                          "—"),
-            ("Ambient",       _fmt_pressure(Pamb),      "—",                          "—"),
+            ("Fuel Tank",     _fmt_fluid(fuel_propellant), _fmt_pressure(P_tank_f),  _fmt_temperature(T_tank_f),  _fmt_density(rho_f)),
+            ("Fuel Manifold", _fmt_fluid(fuel_propellant), _fmt_pressure(P_inj_f),   _fmt_temperature(T_inj_f),   _fmt_density(rho_f_man)),
+            ("Ox Tank",       _fmt_fluid(ox_propellant),   _fmt_pressure(P_tank_ox), _fmt_temperature(T_tank_ox), _fmt_density(rho_ox)),
+            ("Ox Manifold",   _fmt_fluid(ox_propellant),   _fmt_pressure(P_inj_ox),  _fmt_temperature(T_inj_ox),  _fmt_density(rho_ox_man)),
+            ("Chamber",       "—",             _fmt_pressure(Pc),        "—",                          "—"),
+            ("Ambient",       "—",             _fmt_pressure(Pamb),      "—",                          "—"),
         ]
 
         flow_rows = [
@@ -279,7 +282,7 @@ class TestStand:
         return (
             f"\n================ {self.name} =================\n"
             f"\n[Pressures / Temperatures / Densities]\n"
-            f"{_table(state_rows, headers=('Node', 'Pressure', 'Temperature', 'Density'))}\n"
+            f"{_table(state_rows, headers=('Node', 'Fluid', 'Pressure', 'Temperature', 'Density'))}\n"
             f"\n[Mass Flow]\n{_table(flow_rows, headers=('Quantity', 'Value'))}\n"
             f"\n[Nozzle / Performance]\n{_table(geom_rows, headers=('Parameter', 'Value'))}\n"
             f"\n[CdA Summary]\n{_table(cda_rows, headers=('Element', 'Value'))}\n"

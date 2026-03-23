@@ -1,5 +1,39 @@
 from rocketcea.cea_obj_w_units import CEA_Obj
+from .PROPELLANT_NAMES import PROPELLANT_NAME_BANK
 import numpy as np
+
+
+def normalize_propellant_name(name: str) -> str:
+    """
+    Convert arbitrary user input into a RocketCEA-compatible propellant name.
+
+    Parameters
+    ----------
+    name : str
+        Input propellant name (case-insensitive, flexible aliases)
+
+    Returns
+    -------
+    str
+        RocketCEA-compatible propellant name
+
+    Raises
+    ------
+    ValueError
+        If the propellant is not recognized
+    """
+    if not isinstance(name, str):
+        raise TypeError("Propellant name must be a string")
+
+    key = name.strip().lower()
+
+    if key in PROPELLANT_NAME_BANK:
+        return PROPELLANT_NAME_BANK[key]
+
+    raise ValueError(
+        f"Unknown propellant '{name}'. Add it to PROPELLANT_NAME_BANK."
+    )
+
 
 
 def create_CEA_object(fuel: str = 'RP-1', oxidizer: str = 'LOX') -> CEA_Obj:
@@ -51,8 +85,8 @@ def create_CEA_object(fuel: str = 'RP-1', oxidizer: str = 'LOX') -> CEA_Obj:
     >>> cstar = cea.get_Cstar(Pc, MR)
     """
     obj = CEA_Obj(
-        oxName=oxidizer,
-        fuelName=fuel,
+        oxName=normalize_propellant_name(oxidizer),
+        fuelName=normalize_propellant_name(fuel),
         temperature_units='degK',
         cstar_units='m/sec',
         specific_heat_units='kJ/kg degK',

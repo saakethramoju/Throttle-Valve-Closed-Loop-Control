@@ -8,7 +8,7 @@ from scipy.optimize import root
 # -----------------------------
 # Build baseline test stand
 # -----------------------------
-FuelTank = Tank("Fuel Tank", "RP-1", 550 * PA_PER_PSI, 70/1000, temperature=300)
+FuelTank = Tank("Fuel Tank", "jet-a", 550 * PA_PER_PSI, 70/1000, temperature=300)
 OxTank   = Tank("Oxidizer Tank", "LOX", 500 * PA_PER_PSI, 70/1000, temperature=90)
 
 FuelRunline = Line("Fuel Runline")
