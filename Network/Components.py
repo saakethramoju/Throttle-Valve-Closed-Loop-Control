@@ -13,7 +13,7 @@ class Source:
     """
     def __init__(self, 
                  name: str, 
-                 pressure: float
+                 pressure: float = 101325
                  ):
         
         self.name = name
@@ -36,7 +36,7 @@ class Drain:
     """
     def __init__(self, 
                  name: str, 
-                 pressure: float = 14.67
+                 pressure: float = 101325
                  ):
         
         self.name = name
@@ -124,7 +124,7 @@ class Tank(Volume):
     density : float
         Fluid density within the tank [kg/m^3].
     """
-    def __init__(self, name, propellant: str, pressure, volume = 0.1, density: float = 999.84):
+    def __init__(self, name, propellant: str, pressure = 101325, volume = 0.1, density: float = 999.84):
         super().__init__(name, pressure, volume)
         self.propellant = propellant
         self.rho = density  # kg/m^3
@@ -153,7 +153,7 @@ class InjectorManifold(Volume):
     density : float
         Fluid density within the tank [kg/m^3].
     """
-    def __init__(self, name, pressure, volume = 8e-4, density: float = 999.84):
+    def __init__(self, name, pressure = 101325, volume = 8e-4, density: float = 999.84):
         super().__init__(name, pressure, volume)
         self.rho = density  # kg/m^3
 
@@ -183,7 +183,7 @@ class CombustionChamber(Volume):
     cstar_efficiency: float
         eta_c* 
     """
-    def __init__(self, name, pressure, volume = 3e-3, mixture_ratio: float = 2, cstar_efficiency: float = 1):
+    def __init__(self, name, pressure = 101325, volume = 3e-3, mixture_ratio: float = 2, cstar_efficiency: float = 1):
         super().__init__(name, pressure, volume)
         self.MR = mixture_ratio
         self.eta_cstar = cstar_efficiency
