@@ -5,8 +5,8 @@ import numpy as np
 from scipy.optimize import root
 
 from .Components import *
-from Utilities import choked_nozzle_thrust, choked_nozzle_mass_flow
-from Utilities import incompressible_CdA_equation, get_density
+from Utilities import choked_nozzle_thrust, choked_nozzle_mass_flow, get_chamber_pressure
+from Utilities import incompressible_CdA_equation, get_density, get_pressure
 from Utilities import get_cached_CEA
 from Physics.Constants import *
 
@@ -896,3 +896,291 @@ class TestStand:
             else:
                 setattr(result, k, copy.deepcopy(v, memo))
         return result
+
+
+
+
+
+    def timestep(self, dt: float = 0.001) -> "TestStand":
+        """
+        Advance the test stand state by one explicit forward-Euler time step.
+
+        This method evaluates all time derivatives using only the CURRENT state
+        stored on `self`, then returns a NEW `TestStand` instance with the
+        updated state written into the relevant component attributes.
+
+        The original object is not mutated.
+
+        Integration scheme
+        ------------------
+        This is strict forward Euler:
+
+            x_{n+1} = x_n + f(x_n, t_n) * dt
+
+        which means every derivative is computed only from the step-n state.
+        No step-(n+1) quantities are used inside the derivative evaluation.
+
+        What is updated
+        ----------------
+        The returned TestStand contains updated values for:
+        - FuelRunline.mdot
+        - OxRunline.mdot
+        - FuelThrottleValve.mdot
+        - OxThrottleValve.mdot
+        - FuelInjectorManifold.p
+        - OxInjectorManifold.p
+        - FuelInjector.mdot
+        - OxInjector.mdot
+        - MainChamber.p
+        - MainChamber.MR
+        - TCA.mdot
+        - TCA.F
+        - FuelInjector.stiffness
+        - OxInjector.stiffness
+
+        Governing model
+        ---------------
+        The step uses the same lumped-parameter assumptions as the rest of the class:
+        - Feed-system momentum dynamics through the runlines:
+            d(mdot)/dt = [ΔP - (R/rho) * mdot^2] / L_eq
+        - Incompressible injector flow through CdA elements.
+        - Injector-manifold density evolution from continuity.
+        - Chamber density evolution from total injector inflow minus nozzle outflow.
+        - Nozzle mass flow computed from choked flow / c*.
+        - Chamber pressure updated from chamber density and mixture ratio.
+
+        Scheduling / commanded inputs
+        -----------------------------
+        This method intentionally does NOT generate schedules internally.
+        Any commanded changes should be applied externally before calling timestep(),
+        for example:
+            ts.FuelThrottleValve.CdA = ...
+            ts.OxThrottleValve.CdA = ...
+            ts.FuelInjector.CdA = ...
+            ts.MainChamber.eta_cstar = ...
+
+        That keeps this method generic so any attribute can be stepped in time.
+
+        Parameters
+        ----------
+        dt : float, optional
+            Time step in seconds. Must be > 0.
+
+        Returns
+        -------
+        TestStand
+            A new TestStand object containing the advanced state at t + dt.
+
+        Raises
+        ------
+        ValueError
+            If dt <= 0 or if required geometric / physical quantities are non-positive.
+        ZeroDivisionError
+            If the computed fuel injector flow is zero when forming mixture ratio.
+        RuntimeError
+            If chamber pressure recovery fails.
+
+        Notes
+        -----
+        - This method assumes the CURRENT object already contains a physically
+        meaningful transient state (pressures, mdots, MR, etc.).
+        - Since this is explicit Euler, very small manifold volumes or aggressive
+        CdA changes may require a smaller dt for stability.
+        - The tank pressures / temperatures are treated as fixed over the step.
+        """
+
+        if dt <= 0:
+            raise ValueError("dt must be > 0.")
+
+        if self.FuelRunline.A <= 0 or self.OxRunline.A <= 0:
+            raise ValueError("Runline cross-sectional areas must be > 0.")
+
+        if self.FuelRunline.L <= 0 or self.OxRunline.L <= 0:
+            raise ValueError("Runline lengths must be > 0.")
+
+        if self.FuelThrottleValve.CdA <= 0 or self.OxThrottleValve.CdA <= 0:
+            raise ValueError("Throttle valve CdA values must be > 0.")
+
+        if self.FuelInjector.CdA <= 0 or self.OxInjector.CdA <= 0:
+            raise ValueError("Injector CdA values must be > 0.")
+
+        if self.FuelInjectorManifold.V <= 0 or self.OxInjectorManifold.V <= 0:
+            raise ValueError("Injector manifold volumes must be > 0.")
+
+        if self.MainChamber.V <= 0:
+            raise ValueError("Main chamber volume must be > 0.")
+
+        if self.TCA.At <= 0:
+            raise ValueError("Nozzle throat area At must be > 0.")
+
+        if self.MainChamber.eta_cstar <= 0:
+            raise ValueError("MainChamber.eta_cstar must be > 0.")
+
+        # ------------------------------------------------------------------
+        # Read current state (step n)
+        # ------------------------------------------------------------------
+        fuel_sys_L = self.FuelRunline.L / self.FuelRunline.A
+        ox_sys_L = self.OxRunline.L / self.OxRunline.A
+
+        fuel_sys_R = 1.0 / (2.0 * self.FuelThrottleValve.CdA**2)
+        ox_sys_R = 1.0 / (2.0 * self.OxThrottleValve.CdA**2)
+
+        fuel_tank_rho = float(get_density(
+            self.FuelTank.propellant,
+            self.FuelTank.p,
+            self.FuelTank.T,
+        ))
+        ox_tank_rho = float(get_density(
+            self.OxTank.propellant,
+            self.OxTank.p,
+            self.OxTank.T,
+        ))
+
+        fuel_inj_rho = float(get_density(
+            self.FuelTank.propellant,
+            self.FuelInjectorManifold.p,
+            self.FuelInjectorManifold.T,
+        ))
+        ox_inj_rho = float(get_density(
+            self.OxTank.propellant,
+            self.OxInjectorManifold.p,
+            self.OxInjectorManifold.T,
+        ))
+
+        fuel_runline_mdot_n = float(self.FuelRunline.mdot)
+        ox_runline_mdot_n = float(self.OxRunline.mdot)
+
+        fuel_inj_mdot_n = float(self.FuelInjector.mdot)
+        ox_inj_mdot_n = float(self.OxInjector.mdot)
+
+        chamber_p_n = float(self.MainChamber.p)
+        chamber_mr_n = float(self.MainChamber.MR)
+
+        # ------------------------------------------------------------------
+        # Derivatives evaluated strictly at step n
+        # ------------------------------------------------------------------
+        fuel_sys_dm_dt = (
+            (self.FuelTank.p - self.FuelInjectorManifold.p)
+            - (fuel_sys_R / fuel_tank_rho) * fuel_runline_mdot_n**2
+        ) / fuel_sys_L
+
+        ox_sys_dm_dt = (
+            (self.OxTank.p - self.OxInjectorManifold.p)
+            - (ox_sys_R / ox_tank_rho) * ox_runline_mdot_n**2
+        ) / ox_sys_L
+
+        fuel_inj_mdot_eval = float(incompressible_CdA_equation(
+            self.FuelInjectorManifold.p,
+            chamber_p_n,
+            fuel_inj_rho,
+            self.FuelInjector.CdA,
+        ))
+        ox_inj_mdot_eval = float(incompressible_CdA_equation(
+            self.OxInjectorManifold.p,
+            chamber_p_n,
+            ox_inj_rho,
+            self.OxInjector.CdA,
+        ))
+
+        if fuel_inj_mdot_eval == 0:
+            raise ZeroDivisionError("Fuel injector mdot evaluated to zero; cannot form mixture ratio.")
+
+        mr_eval = ox_inj_mdot_eval / fuel_inj_mdot_eval
+
+        tca_mdot_eval = float(choked_nozzle_mass_flow(
+            chamber_p_n,
+            mr_eval,
+            self.TCA.At,
+            self.MainChamber.eta_cstar,
+            self._cea_obj,
+        ))
+
+        fuel_inj_drho_dt = (fuel_runline_mdot_n - fuel_inj_mdot_n) / self.FuelInjectorManifold.V
+        ox_inj_drho_dt = (ox_runline_mdot_n - ox_inj_mdot_n) / self.OxInjectorManifold.V
+
+        chamber_rho_n = float(self._cea_obj.get_Chamber_Density(chamber_p_n, chamber_mr_n))
+        chamber_drho_dt = (
+            fuel_inj_mdot_eval + ox_inj_mdot_eval - tca_mdot_eval
+        ) / self.MainChamber.V
+
+        # ------------------------------------------------------------------
+        # Forward-Euler updates to step n+1
+        # ------------------------------------------------------------------
+        fuel_runline_mdot_np1 = fuel_runline_mdot_n + fuel_sys_dm_dt * dt
+        ox_runline_mdot_np1 = ox_runline_mdot_n + ox_sys_dm_dt * dt
+
+        fuel_inj_rho_np1 = fuel_inj_rho + fuel_inj_drho_dt * dt
+        ox_inj_rho_np1 = ox_inj_rho + ox_inj_drho_dt * dt
+        chamber_rho_np1 = chamber_rho_n + chamber_drho_dt * dt
+
+        fuel_inj_p_np1 = float(get_pressure(
+            self.FuelTank.propellant,
+            fuel_inj_rho_np1,
+            self.FuelInjectorManifold.T,
+        ))
+        ox_inj_p_np1 = float(get_pressure(
+            self.OxTank.propellant,
+            ox_inj_rho_np1,
+            self.OxInjectorManifold.T,
+        ))
+
+        # Use the evaluated n-state injector flows to define the advanced chamber composition.
+        # This stays explicit and avoids using any n+1 injector calculation inside the step.
+        mr_np1 = mr_eval
+
+        try:
+            chamber_p_np1 = float(get_chamber_pressure(
+                chamber_rho_np1,
+                mr_np1,
+                self._cea_obj,
+            ))
+        except TypeError:
+            # Fallback in case your helper does not accept cea_obj
+            chamber_p_np1 = float(get_chamber_pressure(chamber_rho_np1, mr_np1))
+        except Exception as e:
+            raise RuntimeError(f"Failed to recover chamber pressure from density and MR: {e}") from e
+
+        # Keep injector/nozzle mdots explicit on this step
+        fuel_inj_mdot_np1 = fuel_inj_mdot_eval
+        ox_inj_mdot_np1 = ox_inj_mdot_eval
+        tca_mdot_np1 = tca_mdot_eval
+
+        # ------------------------------------------------------------------
+        # Build advanced state object
+        # ------------------------------------------------------------------
+        next_state = copy.deepcopy(self)
+
+        next_state.FuelRunline.mdot = fuel_runline_mdot_np1
+        next_state.OxRunline.mdot = ox_runline_mdot_np1
+
+        next_state.FuelThrottleValve.mdot = fuel_runline_mdot_np1
+        next_state.OxThrottleValve.mdot = ox_runline_mdot_np1
+
+        next_state.FuelInjectorManifold.p = fuel_inj_p_np1
+        next_state.OxInjectorManifold.p = ox_inj_p_np1
+
+        next_state.FuelInjector.mdot = fuel_inj_mdot_np1
+        next_state.OxInjector.mdot = ox_inj_mdot_np1
+
+        next_state.MainChamber.p = chamber_p_np1
+        next_state.MainChamber.MR = mr_np1
+
+        next_state.TCA.mdot = tca_mdot_np1
+
+        if chamber_p_np1 > 0:
+            next_state.FuelInjector.stiffness = (fuel_inj_p_np1 - chamber_p_np1) / chamber_p_np1
+            next_state.OxInjector.stiffness = (ox_inj_p_np1 - chamber_p_np1) / chamber_p_np1
+
+        # Update thrust consistently with advanced chamber pressure and MR
+        next_state.TCA.F = choked_nozzle_thrust(
+            chamber_p_np1,
+            mr_np1,
+            next_state.TCA.At,
+            next_state.Ambient.p,
+            next_state.TCA.eps,
+            next_state.TCA.eta_cf,
+            next_state.TCA.nfz,
+            next_state._cea_obj,
+        )
+
+        return next_state
