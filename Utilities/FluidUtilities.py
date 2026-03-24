@@ -385,3 +385,45 @@ def incompressible_CdA_equation(P1: float, P2: float,   # Pa
         Mass flow rate [kg/s].
     """
     return np.sign(P1 - P2) * CdA * np.sqrt(2 * rho * np.abs(P1 - P2))
+
+
+
+def series_CdA(*CdAs):
+    """
+    Return the equivalent series CdA for any number of flow elements in series.
+
+    For incompressible-style pressure loss written in terms of CdA, series elements
+    combine as:
+
+        1 / CdA_eq^2 = sum(1 / CdA_i^2)
+
+    Parameters
+    ----------
+    *CdAs : float
+        Any number of positive CdA values [m^2].
+
+    Returns
+    -------
+    float
+        Equivalent series CdA [m^2].
+
+    Raises
+    ------
+    ValueError
+        If no CdAs are provided or any CdA is nonpositive.
+    """
+    if len(CdAs) == 0:
+        raise ValueError("At least one CdA must be provided.")
+
+    if len(CdAs) == 1 and isinstance(CdAs[0], (list, tuple, np.ndarray)):
+        CdAs = CdAs[0]
+
+    CdAs = np.asarray(CdAs, dtype=float)
+
+    if CdAs.size == 0:
+        raise ValueError("At least one CdA must be provided.")
+
+    if np.any(CdAs <= 0):
+        raise ValueError("All CdA values must be positive.")
+
+    return np.sqrt(1.0 / np.sum(1.0 / CdAs**2))

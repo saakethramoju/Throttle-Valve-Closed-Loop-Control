@@ -1,4 +1,5 @@
 from rocketcea.cea_obj_w_units import CEA_Obj
+from scipy.optimize import root_scalar
 from .PROPELLANT_NAMES import PROPELLANT_NAME_BANK
 import numpy as np
 
@@ -269,3 +270,71 @@ def choked_nozzle_thrust(
 
     # --- Thrust ---
     return float(eta_cf) * float(cf) * float(Pc) * float(At)
+
+
+
+def get_chamber_pressure(target_density : float, MR : float, Pc_guess : float = 1e6, cea_obj : CEA_Obj = default_cea_obj):
+    """
+    Solve for chamber pressure using RocketCEA chamber density.
+
+    This function inverts the RocketCEA relation:
+        rho_c = get_Chamber_Density(Pc, MR)
+
+    using a single initial guess (no bracketing).
+
+    Parameters
+    ----------
+    cea_obj : CEA_Obj
+        RocketCEA object configured with the desired fuel/oxidizer pair.
+        Assumes all inputs/outputs are already in SI units.
+    MR : float
+        Mixture ratio (O/F) of the chamber.
+    target_density : float
+        Chamber density [kg/m^3].
+    Pc_guess : float, optional
+        Initial guess for chamber pressure [Pa].
+        Default is 1e6 Pa (~10 bar).
+
+    Returns
+    -------
+    Pc : float
+        Chamber pressure [Pa].
+
+    Raises
+    ------
+    ValueError
+        If the root solve fails to converge.
+
+    Notes
+    -----
+    - Uses a secant method (no bracketing required).
+    - Convergence depends on a reasonable initial guess.
+    - Best used in transients with Pc_guess = previous timestep pressure.
+    """
+
+    if target_density <= 0:
+        raise ValueError("target_density must be > 0")
+    if MR <= 0:
+        raise ValueError("MR must be > 0")
+    if Pc_guess <= 0:
+        raise ValueError("Pc_guess must be > 0")
+
+    def residual(log_Pc):
+        Pc = np.exp(log_Pc)
+        rho = cea_obj.get_Chamber_Density(Pc=Pc, MR=MR)
+        return rho - target_density
+
+    sol = root_scalar(
+        residual,
+        x0=np.log(Pc_guess),
+        x1=np.log(Pc_guess * 1.05),
+        method="secant",
+    )
+
+    if not sol.converged:
+        raise ValueError(
+            f"Chamber pressure solve failed. "
+            f"Pc_guess={Pc_guess}, target_density={target_density}, MR={MR}"
+        )
+
+    return float(np.exp(sol.root))

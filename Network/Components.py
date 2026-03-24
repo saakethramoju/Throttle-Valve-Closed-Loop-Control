@@ -185,7 +185,7 @@ class CombustionChamber(Volume):
     cstar_efficiency: float
         eta_c* 
     """
-    def __init__(self, name, pressure = 101325, volume = 3e-3, mixture_ratio: float = 2, cstar_efficiency: float = 1):
+    def __init__(self, name, pressure = 101325, volume = 6e-2, mixture_ratio: float = 2, cstar_efficiency: float = 1):
         super().__init__(name, pressure, volume)
         self.MR = mixture_ratio
         self.eta_cstar = cstar_efficiency
@@ -229,8 +229,9 @@ class Line(Branch):
     """
     Represents an incompressible flow device
 
-    A Line carries a certain flow resistance, given by CdA, and also
-    a certain inertance due to te line length and area.
+    A Line carries a certain inertance due to 
+    the line length and area. It is idealized,
+    meaning it is resistance-free.
     
     Parameters
     ----------
@@ -242,15 +243,11 @@ class Line(Branch):
         Line length [m].
     cross_sectional_area : float
         Internal flow area [m^2].
-    Cd : float
-        Discharge coefficient (dimensionless, 0 <= Cd <= 1).
     """
-    def __init__(self, name, length: float = 1, cross_sectional_area: float = 1e-4, Cd: float = 1, mass_flow = 0):
+    def __init__(self, name, length: float = 1, cross_sectional_area: float = 1e-4, mass_flow = 0):
         super().__init__(name, mass_flow)
         self.L = length     # m
         self.A = cross_sectional_area   # m^2
-        self.Cd = Cd
-        self.CdA = self.A * self.Cd
 
     def __str__(self):
         return (
