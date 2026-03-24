@@ -5,16 +5,16 @@ import matplotlib.pyplot as plt
 from Utilities import set_winplot_dark
 from Physics import PA_PER_PSI, M2_PER_IN2
 from Network.Components import *
-from Network import TestStand
+from Network import TestStand, Balance
 
 set_winplot_dark()
 
-FuelTank = Tank("Fuel Tank", "jet-a", 550 * PA_PER_PSI, 70 / 1000, temperature=300)
-OxTank = Tank("Oxidizer Tank", "LOX", 500 * PA_PER_PSI, 70 / 1000, temperature=90)
+FuelTank = Tank("Fuel Tank", "jet-a", 450 * PA_PER_PSI, 70 / 1000, temperature=300)
+OxTank = Tank("Oxidizer Tank", "LOX", 400 * PA_PER_PSI, 70 / 1000, temperature=90)
 
 FuelInjectorManifold = InjectorManifold(
     "Fuel Manifold",
-    432.54 * PA_PER_PSI,
+    350 * PA_PER_PSI,
     temperature=500,
     volume=0.1287,
 )
@@ -28,23 +28,31 @@ OxInjectorManifold = InjectorManifold(
 Chamber = CombustionChamber(
     "Main Chamber",
     300 * PA_PER_PSI,
-    mixture_ratio=2.4173,
-    cstar_efficiency=1,
+    #mixture_ratio=2.4173,
+    mixture_ratio=2,
+    cstar_efficiency=0.8,
     volume=6e-2,
 )
 
 Atmosphere = Drain("Ambient")
 
-FuelThrottle = Valve("Fuel Throttle Valve", CdA=0.5e-4, mass_flow=0)
-OxThrottle = Valve("Oxidizer Throttle Valve", CdA=1.0e-4, mass_flow=0)
+FuelThrottle = Valve("Fuel Throttle Valve", CdA=0.5e-4)
+OxThrottle = Valve("Oxidizer Throttle Valve", CdA=1.0e-4)
 
-FuelRunline = Line("Fuel Runline", length=5, cross_sectional_area=0.5e-4, mass_flow=0)
-OxRunline = Line("Oxidizer Runline", length=5, cross_sectional_area=0.5e-4, mass_flow=0)
+FuelRunline = Line("Fuel Runline", length=5, cross_sectional_area=0.5e-4)
+OxRunline = Line("Oxidizer Runline", length=5, cross_sectional_area=0.5e-4)
 
-FuelInjector = Orifice("Fuel Injector", 0.5e-4, mass_flow=0)
-OxInjector = Orifice("Oxidizer Injector", 1.0e-4, mass_flow=0)
+FuelInjector = Orifice("Fuel Injector", 0.5e-4)
+OxInjector = Orifice("Oxidizer Injector", 1.0e-4)
 
-TCA = Nozzle("Nozzle", 7.5313 * M2_PER_IN2, mass_flow=0)
+TCA = Nozzle(
+    "Nozzle", 
+    throat_area=6.05 * M2_PER_IN2, 
+    contraction_ratio=2, 
+    expansion_ratio=4.7, 
+    eta_cf=0.95,
+    nfz=2
+)
 
 HETS = TestStand(
     "HETS",
@@ -102,7 +110,7 @@ def ramp_hold_schedule(timespan, initial_value, final_value, t1, t2):
 # ============================================
 # Time grid
 # ============================================
-dt = 0.01
+dt = 0.001
 timespan = np.arange(0, 10 + dt, dt)
 
 # ============================================
@@ -110,15 +118,24 @@ timespan = np.arange(0, 10 + dt, dt)
 # ============================================
 ts = copy.deepcopy(HETS)
 
-ss_result = ts.steady_state()
+#ss_result = ts.steady_state()
+MR_balance = Balance(
+    tune="FuelInjector.CdA",
+    measure="MainChamber.MR",
+    target=2,
+    bounds=(1e-6, 1e-4),
+    tol=1e-5,   #
+)
+ss_result = ts.steady_state_with_balance(MR_balance)
 if ss_result is not None:
     ts = ss_result
+print(ts)
 
 # ============================================
 # Throttle schedules
 # constant -> ramp -> constant
 # ============================================
-fuel_throttle_CdA = ramp_hold_schedule(
+'''fuel_throttle_CdA = ramp_hold_schedule(
     timespan,
     initial_value=ts.FuelThrottleValve.CdA,
     final_value=2.0 * ts.FuelThrottleValve.CdA,
@@ -132,6 +149,22 @@ ox_throttle_CdA = ramp_hold_schedule(
     final_value=1.15 * ts.OxThrottleValve.CdA,
     t1=1.5,
     t2=3.0,
+)'''
+
+fuel_throttle_CdA = ramp_hold_schedule(
+    timespan,
+    initial_value=ts.FuelThrottleValve.CdA,
+    final_value=2.0 * ts.FuelThrottleValve.CdA,
+    t1=1.5,
+    t2=3.0,
+)
+
+ox_throttle_CdA = ramp_hold_schedule(
+    timespan,
+    initial_value=ts.OxThrottleValve.CdA,
+    final_value=1.15 * ts.OxThrottleValve.CdA,
+    t1=1.5,
+    t2=2.5,
 )
 
 # ============================================
@@ -196,6 +229,8 @@ for i, _ in enumerate(timespan[:-1]):
 
     fuel_throttle_cmd[i + 1] = ts.FuelThrottleValve.CdA
     ox_throttle_cmd[i + 1] = ts.OxThrottleValve.CdA
+
+print(ts)
 
 # ============================================
 # Plotting

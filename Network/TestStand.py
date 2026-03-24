@@ -121,12 +121,8 @@ class TestStand:
         return f"TestStand (name={self.name}, FuelTank={self.FuelTank!r}, OxTank={self.OxTank!r}, MainChamber={self.MainChamber!r}, TCA={self.TCA!r})"
 
 
-
-    def __str__(self, units: str = "SI") -> str:
+    def __str__(self, units: str = "COMBINED") -> str:
         # Local helpers
-        def _fmt_kgps(x):
-            return f"{x:.4f} kg/s" if x is not None else "—"
-        
         def _fmt_fluid(f):
             return f if f is not None else "—"
 
@@ -161,10 +157,7 @@ class TestStand:
             except Exception:
                 return None
 
-        # ------------------------
-        # Unit system selection
-        # ------------------------
-        units = (units or "SI").upper()
+        units = (units or "COMBINED").upper()
 
         if units == "SI":
             def _fmt_pressure(p):
@@ -182,6 +175,9 @@ class TestStand:
             def _fmt_density(rho):
                 return f"{rho:.1f} kg/m^3" if rho is not None else "—"
 
+            def _fmt_mdot(mdot):
+                return f"{mdot:.4f} kg/s" if mdot is not None else "—"
+
         elif units == "US":
             def _fmt_pressure(p):
                 return f"{p / PA_PER_PSI:,.2f} psi" if p is not None else "—"
@@ -193,15 +189,55 @@ class TestStand:
                 return f"{f * LBF_PER_N:,.2f} lbf" if f is not None else "—"
 
             def _fmt_temperature(T):
-                return f"{T * 9.0 / 5.0:.2f} R" if T is not None else "—"
+                return f"{T * RANKINE_PER_KELVIN:.2f} R" if T is not None else "—"
 
             def _fmt_density(rho):
-                return f"{rho * 0.062428:.3f} lbm/ft^3" if rho is not None else "—"
+                return f"{rho * LBM_FT3_PER_KG_M3:.3f} lbm/ft^3" if rho is not None else "—"
+
+            def _fmt_mdot(mdot):
+                return f"{mdot * LBM_PER_KG:.4f} lbm/s" if mdot is not None else "—"
+
+        elif units == "COMBINED":
+            def _fmt_pressure(p):
+                return (
+                    f"{p:,.2f} Pa ({p / PA_PER_PSI:,.2f} psi)"
+                    if p is not None else "—"
+                )
+
+            def _fmt_area(a):
+                return (
+                    f"{a:.3e} m^2 ({a * IN2_PER_M2:.4f} in^2)"
+                    if a is not None else "—"
+                )
+
+            def _fmt_force(f):
+                return (
+                    f"{f:,.2f} N ({f * LBF_PER_N:,.2f} lbf)"
+                    if f is not None else "—"
+                )
+
+            def _fmt_temperature(T):
+                return (
+                    f"{T:.2f} K ({T * RANKINE_PER_KELVIN:.2f} R)"
+                    if T is not None else "—"
+                )
+
+            def _fmt_density(rho):
+                return (
+                    f"{rho:.1f} kg/m^3 ({rho * LBM_FT3_PER_KG_M3:.3f} lbm/ft^3)"
+                    if rho is not None else "—"
+                )
+
+            def _fmt_mdot(mdot):
+                return (
+                    f"{mdot:.4f} kg/s ({mdot * LBM_PER_KG:.4f} lbm/s)"
+                    if mdot is not None else "—"
+                )
 
         else:
-            raise ValueError("units must be 'SI' or 'US'")
+            raise ValueError("units must be 'SI', 'US', or 'COMBINED'")
 
-        # Pull common numbers (don’t crash if unsolved)
+        # Pull common numbers
         mdot_f = _get(self.FuelInjector, "mdot")
         mdot_ox = _get(self.OxInjector, "mdot")
         mdot_total = (mdot_f + mdot_ox) if (mdot_f is not None and mdot_ox is not None) else None
@@ -225,41 +261,43 @@ class TestStand:
         fuel_propellant = getattr(self.FuelTank, "propellant", None)
         ox_propellant = getattr(self.OxTank, "propellant", None)
 
-        # Densities from CoolProp helper
+        # Densities
         rho_f = _safe_density(fuel_propellant, P_tank_f, T_tank_f)
         rho_ox = _safe_density(ox_propellant, P_tank_ox, T_tank_ox)
         rho_f_man = _safe_density(fuel_propellant, P_inj_f, T_inj_f)
         rho_ox_man = _safe_density(ox_propellant, P_inj_ox, T_inj_ox)
 
-        # Nozzle / thrust
+        # Nozzle / thrust / efficiencies
         At = _get(self.TCA, "At")
         eps = _get(self.TCA, "eps")
         F = _get(self.TCA, "F")
+        nfz = _get(self.TCA, "nfz")
+        eta_cstar = _get(self.MainChamber, "eta_cstar")
+        eta_cf = _get(self.TCA, "eta_cf")
 
-        # CdAs (if present)
+        # CdAs
         CdA_f_sys = _get(self.FuelThrottleValve, "CdA")
         CdA_ox_sys = _get(self.OxThrottleValve, "CdA")
         CdA_f_inj = _get(self.FuelInjector, "CdA")
         CdA_ox_inj = _get(self.OxInjector, "CdA")
 
-        # Injector stiffness (dimensionless dp/p)
+        # Injector stiffness
         stiff_f = _get(self.FuelInjector, "stiffness")
         stiff_ox = _get(self.OxInjector, "stiffness")
 
-        # Build tables
         state_rows = [
             ("Fuel Tank",     _fmt_fluid(fuel_propellant), _fmt_pressure(P_tank_f),  _fmt_temperature(T_tank_f),  _fmt_density(rho_f)),
             ("Fuel Manifold", _fmt_fluid(fuel_propellant), _fmt_pressure(P_inj_f),   _fmt_temperature(T_inj_f),   _fmt_density(rho_f_man)),
             ("Ox Tank",       _fmt_fluid(ox_propellant),   _fmt_pressure(P_tank_ox), _fmt_temperature(T_tank_ox), _fmt_density(rho_ox)),
             ("Ox Manifold",   _fmt_fluid(ox_propellant),   _fmt_pressure(P_inj_ox),  _fmt_temperature(T_inj_ox),  _fmt_density(rho_ox_man)),
-            ("Chamber",       "—",             _fmt_pressure(Pc),        "—",                          "—"),
-            ("Ambient",       "—",             _fmt_pressure(Pamb),      "—",                          "—"),
+            ("Chamber",       "—",                         _fmt_pressure(Pc),         "—",                          "—"),
+            ("Ambient",       "—",                         _fmt_pressure(Pamb),       "—",                          "—"),
         ]
 
         flow_rows = [
-            ("Fuel mdot", _fmt_kgps(mdot_f)),
-            ("Ox mdot", _fmt_kgps(mdot_ox)),
-            ("Total mdot", _fmt_kgps(mdot_total)),
+            ("Fuel mdot", _fmt_mdot(mdot_f)),
+            ("Ox mdot", _fmt_mdot(mdot_ox)),
+            ("Total mdot", _fmt_mdot(mdot_total)),
             ("MR", f"{MR:.4f}" if MR is not None else "—"),
             ("Fuel inj stiffness", f"{100.0 * stiff_f:.2f} %" if stiff_f is not None else "—"),
             ("Ox inj stiffness", f"{100.0 * stiff_ox:.2f} %" if stiff_ox is not None else "—"),
@@ -268,7 +306,10 @@ class TestStand:
         geom_rows = [
             ("At", _fmt_area(At)),
             ("eps", f"{eps:.3f}" if eps is not None else "—"),
+            ("nfz", f"{nfz:.3f}" if nfz is not None else "—"),
             ("F", _fmt_force(F)),
+            ("c* efficiency", f"{100.0 * eta_cstar:.2f} %" if eta_cstar is not None else "—"),
+            ("Cf efficiency", f"{100.0 * eta_cf:.2f} %" if eta_cf is not None else "—"),
         ]
 
         cda_rows = [
@@ -278,7 +319,6 @@ class TestStand:
             ("Ox injector CdA", _fmt_area(CdA_ox_inj)),
         ]
 
-        # Final report string
         return (
             f"\n================ {self.name} =================\n"
             f"\n[Pressures / Temperatures / Densities]\n"
@@ -1082,10 +1122,23 @@ class TestStand:
             self.OxInjector.CdA,
         ))
 
-        if fuel_inj_mdot_eval == 0:
-            raise ZeroDivisionError("Fuel injector mdot evaluated to zero; cannot form mixture ratio.")
+        # Forward-only injector model
+        fuel_inj_mdot_eval = max(fuel_inj_mdot_eval, 0.0)
+        ox_inj_mdot_eval = max(ox_inj_mdot_eval, 0.0)
+
+        if fuel_inj_mdot_eval <= 0.0:
+            raise ValueError(
+                "Fuel injector mass flow became nonpositive during timestep; "
+                "cannot form a valid mixture ratio."
+            )
 
         mr_eval = ox_inj_mdot_eval / fuel_inj_mdot_eval
+
+        if mr_eval <= 0.0:
+            raise ValueError(
+                f"Computed invalid mixture ratio MR={mr_eval}. "
+                "Check manifold pressures, throttle schedules, and dt."
+            )
 
         tca_mdot_eval = float(choked_nozzle_mass_flow(
             chamber_p_n,
