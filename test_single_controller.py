@@ -14,7 +14,7 @@ set_winplot_dark()
 # ============================================================
 # Time Grid
 # ============================================================
-dt = 0.001
+dt = 0.01
 timespan = np.arange(0.0, 10.0 + dt, dt)
 
 
@@ -100,13 +100,13 @@ HETS = TestStand(
 # --- Build Steady-State Initial Condition ---
 ts = copy.deepcopy(HETS)
 
-#ss_result = ts.steady_state()
+# ss_result = ts.steady_state()
 MR_balance = Balance(
     tune="OxThrottleValve.CdA",
     measure="MainChamber.MR",
     target=2.3,
     bounds=(1e-6, 1e-4),
-    tol=1e-5,   #
+    tol=1e-5,
 )
 ss_result = ts.steady_state_with_balance(MR_balance)
 if ss_result is not None:
@@ -137,10 +137,7 @@ ox_actuator = TestActuator(
 pid = PID(
     Kp=5.0e-5,
     Ki=5.0e-5,
-    Kd=0,
-    u_min=ox_cda_min,
-    u_max=ox_cda_max,
-    u_bias=ox_cda_initial,
+    Kd=0.0,
 )
 pid.reset(measurement=ts.MainChamber.MR)
 
@@ -156,9 +153,8 @@ fuel_throttle_schedule = ramp_hold_schedule(
     t2=3.0,
 )
 
-#mr_target_schedule = np.full_like(timespan, 2.0, dtype=float)
-mr_target_schedule = ramp_hold_schedule(timespan, 2.3, 2.0, 2, 4.0)
-
+# mr_target_schedule = np.full_like(timespan, 2.0, dtype=float)
+mr_target_schedule = ramp_hold_schedule(timespan, 2.3, 2.0, 2.0, 4.0)
 
 
 # ============================================================
@@ -224,15 +220,19 @@ for i, t in enumerate(timespan[:-1]):
     mr_measured = ts.MainChamber.MR
     mr_target = mr_target_schedule[i]
 
-    # PID computes desired Ox throttle CdA
+    # PID computes desired Ox throttle CdA directly
     ox_cmd, err, integ, dmeas = pid.update(
         target=mr_target,
         measurement=mr_measured,
         dt=dt,
+        u_min=ox_cda_min,
+        u_max=ox_cda_max,
+        u_bias=ox_cda_initial,
+        internal_anti_windup=True,
     )
 
-    # Store unsaturated value if the PID class exposes it; otherwise store command
-    unsat_cmd = pid.u_unsat if hasattr(pid, "u_unsat") and pid.u_unsat is not None else ox_cmd
+    # Store unsaturated command for plotting
+    unsat_cmd = pid.u_unsat if pid.u_unsat is not None else ox_cmd
     ox_throttle_unsat[i + 1] = unsat_cmd
 
     # Actuator applies rate limiting and hard bounds
@@ -259,6 +259,7 @@ for i, t in enumerate(timespan[:-1]):
         print("Ox throttle CdA =", ts.OxThrottleValve.CdA)
         break
     '''
+
     # Advance plant one timestep
     ts = ts.timestep(dt=dt)
 
@@ -286,9 +287,6 @@ for i, t in enumerate(timespan[:-1]):
 
 
 print(ts)
-
-
-
 
 
 # ============================================================
@@ -355,7 +353,6 @@ def add_throttle_overlay(ax):
     )
     ax2.set_ylabel("Throttle CdA (cm$^2$)")
     return ax2
-
 
 
 thrust_lbf = thrust * 0.2248089431
