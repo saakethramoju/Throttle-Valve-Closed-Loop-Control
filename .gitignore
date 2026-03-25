@@ -27,3 +27,7 @@ Utilities/__pycache__/ControlUtilities.cpython-313.pyc
 __pycache__/Fluid.cpython-313.pyc
 Utilities/__pycache__/FLUID_NAMES.cpython-313.pyc
 Utilities/__pycache__/PROPELLANT_NAMES.cpython-313.pyc
+Controller/__pycache__/__init__.cpython-313.pyc
+Controller/__pycache__/Actuators.cpython-313.pyc
+Controller/__pycache__/ControlUtilities.cpython-313.pyc
+Controller/__pycache__/PID.cpython-313.pyc
