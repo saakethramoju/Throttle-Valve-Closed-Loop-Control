@@ -6,7 +6,7 @@ from Utilities import set_winplot_dark
 from Physics import PA_PER_PSI, M2_PER_IN2, LBF_PER_N
 from Network.Components import *
 from Network import TestStand, Balance
-from Controller import TestActuator, PID, apply_error_deadband, ramp, low_pass_filter
+from Controller import TestActuator, PID, apply_error_deadband, ramp, low_pass_filter, step
 
 set_winplot_dark()
 
@@ -202,15 +202,24 @@ u_diff_min = -min(fuel_up_margin, ox_down_margin)
 # Key tuning idea:
 #   Pc sensitivity to CdA is VERY large → small gains required
 #   Integral action is critical to remove steady-state error
-pid_u_sum = PID(
+'''pid_u_sum = PID(
     Kp=1.0e-10,
     Ki=3.5e-10,
-    Kd=0.0,
+    Kd=1e-10,
     u_min=u_sum_min,
     u_max=u_sum_max,
     u_bias=0.0,   # no offset; trim already handles steady-state
 )
-
+'''
+pid_u_sum = PID(
+    Kp=1.0e-10,
+    Ki=3.5e-10,
+    Kd=5.0e-11,
+    u_min=u_sum_min,
+    u_max=u_sum_max,
+    u_bias=0.0,
+    tau_d=0.005,
+)
 
 # Mixture ratio controller (u_diff)
 # Controls MR by shifting flow between fuel and oxidizer.
@@ -221,7 +230,7 @@ pid_u_sum = PID(
 pid_u_diff = PID(
     Kp=5.0e-5,
     Ki=3.0e-5,
-    Kd=0.0,
+    Kd=0,
     u_min=u_diff_min,
     u_max=u_diff_max,
     u_bias=0.0,
@@ -237,6 +246,7 @@ pid_u_diff.reset(measurement=ts.MainChamber.MR)
 # ============================================================
 # Schedule Setup
 # ============================================================
+'''
 Pc_target_schedule = ramp(
     timespan,
     initial_value=ts.MainChamber.p,
@@ -252,7 +262,15 @@ MR_target_schedule = ramp(
     t1=2.0,
     t2=4.0,
 )
+'''
+Pc_target_schedule = step(
+    timespan,
+    initial_value=ts.MainChamber.p,
+    final_value=300*PA_PER_PSI,
+    t_step=2.0
+)
 
+MR_target_schedule = np.full_like(timespan, 2)
 
 
 # ============================================================
@@ -318,10 +336,14 @@ MR_filt = ts.MainChamber.MR
 # Closed-Loop Simulation
 # ============================================================
 for i, t in enumerate(timespan[:-1]):
-    Pc_measured = ts.MainChamber.p
-    #MR_measured = ts.MainChamber.MR
+
+    Pc_raw = ts.MainChamber.p
     MR_raw = ts.MainChamber.MR
-    MR_filt = low_pass_filter(MR_filt, MR_raw, dt, tau=0.08)
+
+    Pc_filt = low_pass_filter(Pc_filt, Pc_raw, dt, tau=0.0)
+    MR_filt = low_pass_filter(MR_filt, MR_raw, dt, tau=0.0)
+
+    Pc_measured = Pc_filt
     MR_measured = MR_filt
 
     Pc_target = Pc_target_schedule[i]
