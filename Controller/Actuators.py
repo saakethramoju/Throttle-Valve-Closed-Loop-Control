@@ -12,9 +12,7 @@ This makes closed-loop simulations more realistic than directly writing the
 controller command into the plant.
 """
 
-from .ControlUtilities import saturation
-
-
+from .Filters import saturation
 class TestActuator:
     """
     Simple rate-limited actuator with hard output bounds.

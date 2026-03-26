@@ -1237,3 +1237,60 @@ class TestStand:
         )
 
         return next_state
+    
+
+    def check_max_throttlable_condition(self, fuel_CdA_range, ox_CdA_range):
+        """
+        Evaluate steady-state chamber conditions at the maximum fuel and oxidizer
+        throttle CdA values.
+
+        This provides a quick estimate of the upper bound of achievable chamber
+        pressure (Pc) and the corresponding mixture ratio (MR) at the maximum
+        throttle settings.
+
+        Parameters
+        ----------
+        fuel_CdA_range : tuple[float, float]
+            Minimum and maximum allowable fuel throttle CdA as
+            (fuel_CdA_min, fuel_CdA_max).
+        ox_CdA_range : tuple[float, float]
+            Minimum and maximum allowable oxidizer throttle CdA as
+            (ox_CdA_min, ox_CdA_max).
+
+        Returns
+        -------
+        dict
+            Dictionary containing:
+                - "fuel_CdA": fuel CdA used (max value)
+                - "ox_CdA": oxidizer CdA used (max value)
+                - "Pc": resulting steady-state chamber pressure
+                - "MR": resulting steady-state mixture ratio
+
+        Notes
+        -----
+        The original throttle CdA values are restored before returning.
+        """
+        _, fuel_CdA_max = fuel_CdA_range
+        _, ox_CdA_max = ox_CdA_range
+
+        original_fuel_CdA = self.FuelThrottleValve.CdA
+        original_ox_CdA = self.OxThrottleValve.CdA
+
+        try:
+            self.FuelThrottleValve.CdA = fuel_CdA_max
+            self.OxThrottleValve.CdA = ox_CdA_max
+
+            ss = self.steady_state()
+
+            result = {
+                "fuel_CdA": fuel_CdA_max,
+                "ox_CdA": ox_CdA_max,
+                "Pc": ss.MainChamber.p,
+                "MR": ss.MainChamber.MR,
+            }
+
+        finally:
+            self.FuelThrottleValve.CdA = original_fuel_CdA
+            self.OxThrottleValve.CdA = original_ox_CdA
+
+        return result

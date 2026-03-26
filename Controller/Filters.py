@@ -1,3 +1,17 @@
+import numpy as np
+
+
+def apply_error_deadband(target: float, measurement: float, tolerance: float) -> float:
+    """
+    Return an effective target that disables controller action when the error
+    magnitude is below a specified tolerance.
+    """
+    error = target - measurement
+    if abs(error) < tolerance:
+        return measurement
+    return target
+
+
 def saturation(x, x_min, x_max):
     """
     Clamp a scalar value between lower and upper bounds.
@@ -48,3 +62,28 @@ def saturation(x, x_min, x_max):
 
     return max(x_min, min(x, x_max))
 
+
+
+
+def low_pass_filter(prev_filtered, measurement, dt, tau):
+    """
+    First-order low-pass filter (exponential smoothing).
+
+    Parameters
+    ----------
+    prev_filtered : float
+        Previous filtered value (x_f[k-1]).
+    measurement : float
+        Current raw measurement (x[k]).
+    dt : float
+        Timestep (seconds).
+    tau : float
+        Filter time constant (seconds). Larger tau = more smoothing.
+
+    Returns
+    -------
+    float
+        Updated filtered value (x_f[k]).
+    """
+    alpha = dt / (tau + dt)
+    return prev_filtered + alpha * (measurement - prev_filtered)
