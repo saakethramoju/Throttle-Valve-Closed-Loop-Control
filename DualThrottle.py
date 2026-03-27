@@ -29,6 +29,42 @@ Pc_measured --> PID on Pc ----------> delta_alpha
                                       v
                              Pc, MR, mdot, thrust
 """
+# ============================================================
+# Controller Limits and Rates 
+# ============================================================
+# This controller uses a feedforward + PID trim architecture:
+#   alpha_cmd = alpha_ff + delta_alpha
+#
+# The limits serve distinct purposes:
+#
+# - Dynamic PID bounds:
+#     pid_alpha.u_min = -alpha_ff
+#     pid_alpha.u_max = 1 - alpha_ff
+#   These ensure the PID correction (delta_alpha) cannot push the
+#   total alpha command outside the valid range [0, 1].
+#
+# - Final alpha clipping:
+#     alpha_cmd = clip(alpha_cmd, 0, 1)
+#   This is a final safety check to guarantee a valid command.
+#
+# - Actuator limits (in TestActuator):
+#   These enforce real physical constraints:
+#     • minimum and maximum CdA
+#     • maximum rate of change of CdA (valve cannot move instantly)
+#
+# - Optional filtering (tau_pc, tau_d):
+#   These smooth noisy signals:
+#     • tau_pc filters measured chamber pressure
+#     • tau_d filters the derivative term in the PID
+#
+# ------------------------------------------------------------
+# Future extensions (if needed):
+# You can introduce additional smoothing/limits such as:
+#   • feedforward rate limiting (smooth alpha_ff changes)
+#   • PID output slew rate limiting (limit how fast delta_alpha changes)
+# These are useful if you see aggressive command jumps or oscillations,
+# but are not required for basic operation.
+# ============================================================
 
 import copy
 import numpy as np
@@ -39,10 +75,11 @@ from Utilities import set_winplot_dark
 from Utilities.Constants import PA_PER_PSI, LBF_PER_N
 from Network.Components import *
 from Network import Balance
-from Controller import TestActuator, PID, ramp, low_pass_filter, step, rate_limit
+from Controller import TestActuator, PID, ramp, low_pass_filter, step
 from HETS import HETS
 
 set_winplot_dark() # cool plots format
+
 
 
 # ============================================================
@@ -81,15 +118,11 @@ alpha_map_filename = "alpha_map.parquet"   # steady-state map file: alpha -> sta
 Kp_alpha = 5.0e-8                          # proportional gain on Pc error
 Ki_alpha = 1.0e-6                          # integral gain on Pc error
 Kd_alpha = 0                               # derivative gain on Pc error
-delta_alpha_min = -0.2                     # nominal lower bound on PID output (delta_alpha) before dynamic update (what is max that -d_alpha can be per dt)
-delta_alpha_max = 0.2                      # nominal upper bound on PID output (delta_alpha) before dynamic update (what is max that +d_alpha can be per dt)
 u_bias_alpha = 0.0                         # PID output bias; keep zero because alpha_ff provides feedforward (what alpha should PID immediately try to jump to every dt)
 tau_d_alpha = 0.0                          # derivative filter time constant [s] (low pass filter on d_error / dt since the derivative can be noisy)
-du_dt_limit_alpha = 100.0                  # max slew rate of PID output delta_alpha [1/s] (what is maximum that d_alpha/dt can be per dt)
 
 # --- Additional command shaping ---
 tau_pc = 0.0                               # optional low-pass filter on Pc measurement [s] (could simulate an actual low pass filter on CHPT)
-alpha_ff_rate_limit = 100.                 # max slew rate of feedforward alpha_ff [1/s] (could simulate an actual low pass filter on CHPT)
 
 
 
@@ -206,12 +239,13 @@ pid_alpha = PID(
     Kp=Kp_alpha,
     Ki=Ki_alpha,
     Kd=Kd_alpha,
-    u_min=delta_alpha_min,
-    u_max=delta_alpha_max,
+    u_min=-1.0,                         # temporary placeholder; overwritten every loop by dynamic alpha bounds
+    u_max=1.0,                          # temporary placeholder; overwritten every loop by dynamic alpha bounds
     u_bias=u_bias_alpha,
     tau_d=tau_d_alpha,
-    du_dt_limit=du_dt_limit_alpha,         # rate-limit the PID correction delta_alpha
+    du_dt_limit=None,                   # disable PID output slew limiting
 )
+
 
 pid_alpha.reset(measurement=ts.MainChamber.p, output=0.0)  # start with zero feedback correction
 
@@ -274,10 +308,10 @@ Pc_error_hist[0] = Pc_target_schedule[0] - ts.MainChamber.p
 Pc_integral_hist[0] = pid_alpha.integral
 Pc_dmeas_hist[0] = 0.0
 
-alpha_ff_state = np.interp(Pc_target_schedule[0], Pc_vec, alpha_vec)  # initial feedforward throttle level
-alpha_ff_hist[0] = alpha_ff_state
+
+alpha_ff_hist[0] = np.interp(Pc_target_schedule[0], Pc_vec, alpha_vec)  # initial feedforward throttle level
 delta_alpha_hist[0] = 0.0
-alpha_cmd_hist[0] = np.clip(alpha_ff_state, 0.0, 1.0)
+alpha_cmd_hist[0] = np.clip(alpha_ff_hist[0], 0.0, 1.0)
 
 
 # ============================================================
@@ -295,15 +329,7 @@ for i, t in enumerate(timespan[:-1]):
     Pc_measured = Pc_filt
     Pc_target = Pc_target_schedule[i]
 
-    alpha_ff_target = np.interp(Pc_target, Pc_vec, alpha_vec)   # steady-state throttle level for target Pc
-
-    alpha_ff_state = rate_limit(
-        prev_value=alpha_ff_state,
-        target_value=alpha_ff_target,
-        dt=dt,
-        max_rate=alpha_ff_rate_limit,                           # smooth feedforward so steady-state map is not applied instantly
-    )
-    alpha_ff = alpha_ff_state
+    alpha_ff = np.interp(Pc_target, Pc_vec, alpha_vec)   # steady-state throttle level for target Pc, no feed forward rate limiting
 
     # Keep alpha_cmd = alpha_ff + delta_alpha inside [0, 1].
     pid_alpha.u_min = -alpha_ff
@@ -316,7 +342,7 @@ for i, t in enumerate(timespan[:-1]):
     )
 
     alpha_cmd = alpha_ff + delta_alpha
-    alpha_cmd = np.clip(alpha_cmd, 0.0, 1.0)
+    alpha_cmd = np.clip(alpha_cmd, 0.0, 1.0)    # this line is purely for redundancy
 
     fuel_trim = np.interp(alpha_cmd, alpha_vec, fuel_CdA_vec)  # map commanded alpha to coordinated fuel valve trim
     ox_trim = np.interp(alpha_cmd, alpha_vec, ox_CdA_vec)      # map commanded alpha to coordinated ox valve trim
