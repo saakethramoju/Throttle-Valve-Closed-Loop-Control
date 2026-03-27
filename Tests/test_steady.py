@@ -17,7 +17,7 @@ In the command terminal for the root directory (the overall project folder), run
 import numpy as np
 import matplotlib.pyplot as plt
 from Utilities import set_winplot_dark, solve_system_CdAs, get_density, get_pressure
-from Physics import PA_PER_PSI, M2_PER_IN2, N_PER_LBF
+from Utilities.Constants import PA_PER_PSI, M2_PER_IN2, N_PER_LBF
 from Network.Components import *
 from Network import TestStand, Balance
 from scipy.optimize import root

@@ -20,7 +20,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from Utilities import set_winplot_dark
-from Physics import PA_PER_PSI, M2_PER_IN2
+from Utilities.Constants import PA_PER_PSI, M2_PER_IN2
 from Network.Components import *
 from Network import TestStand, Balance
 
