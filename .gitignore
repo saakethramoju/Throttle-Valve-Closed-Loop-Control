@@ -33,3 +33,9 @@ Controller/__pycache__/ControlUtilities.cpython-313.pyc
 Controller/__pycache__/PID.cpython-313.pyc
 Controller/__pycache__/Filters.cpython-313.pyc
 Controller/__pycache__/CommandInputs.cpython-313.pyc
+__pycache__/HETS.cpython-313.pyc
+Tests/__pycache__/__init__.cpython-313.pyc
+Tests/__pycache__/test_full_controller.cpython-313.pyc
+Tests/__pycache__/test_transient_full.cpython-313.pyc
+Tests/__pycache__/test_steady.cpython-313.pyc
+Tests/__pycache__/test_single_controller.cpython-313.pyc

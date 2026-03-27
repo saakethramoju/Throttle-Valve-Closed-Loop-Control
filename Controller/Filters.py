@@ -1,6 +1,48 @@
 import numpy as np
 
 
+def rate_limit(prev_value, target_value, dt, max_rate):
+    """
+    Apply a symmetric rate limiter to a signal.
+
+    This function constrains how quickly a value can change between time steps,
+    enforcing a maximum rate of increase or decrease. It is commonly used to
+    model actuator slew rate limits (e.g., valve motion) or to prevent abrupt
+    command changes in control systems.
+
+    The update follows:
+        delta_max = max_rate * dt
+        output = prev_value + clip(target_value - prev_value, -delta_max, delta_max)
+
+    Parameters
+    ----------
+    prev_value : float
+        Value from the previous time step.
+    target_value : float
+        Desired (unconstrained) value at the current time step.
+    dt : float
+        Time step size [s].
+    max_rate : float
+        Maximum allowed rate of change [units/s].
+
+    Returns
+    -------
+    float
+        Rate-limited value for the current time step.
+
+    Notes
+    -----
+    - The limiter is symmetric: the same rate bound is applied to increases
+      and decreases.
+    - If |target_value - prev_value| <= max_rate * dt, the target is reached
+      exactly in one step.
+    - Otherwise, the output moves toward the target at the maximum allowed rate.
+    """
+    delta_max = max_rate * dt
+    delta = np.clip(target_value - prev_value, -delta_max, delta_max)
+    return prev_value + delta
+
+
 def apply_error_deadband(target: float, measurement: float, tolerance: float) -> float:
     """
     Return an effective target that disables controller action when the error

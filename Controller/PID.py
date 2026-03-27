@@ -1,5 +1,5 @@
 from .Actuators import saturation
-from .Filters import low_pass_filter
+from .Filters import low_pass_filter, rate_limit
 
 
 class PID:
@@ -281,14 +281,12 @@ class PID:
         if self.du_dt_limit is None or self.prev_u is None:
             u = u_sat
         else:
-            du_max = self.du_dt_limit * dt
-            du = u_sat - self.prev_u
-            if du > du_max:
-                u = self.prev_u + du_max
-            elif du < -du_max:
-                u = self.prev_u - du_max
-            else:
-                u = u_sat
+            u = rate_limit(
+                prev_value=self.prev_u,
+                target_value=u_sat,
+                dt=dt,
+                max_rate=self.du_dt_limit,
+            )
 
         self.u = u
 

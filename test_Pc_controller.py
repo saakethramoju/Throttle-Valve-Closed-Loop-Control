@@ -1,6 +1,34 @@
-'''
+"""
+Closed-loop Pc control using an alpha-based steady-state map.
 
-'''
+Block diagram
+-------------
+Pc_target_schedule
+        |
+        v
+  Pc -> alpha steady-state map  -----> alpha_ff_target
+        |                                  |
+        |                             rate limit
+        |                                  v
+        |                              alpha_ff
+        |                                  |
+Pc_measured --> PID on Pc ----------> delta_alpha
+        |                                  |
+        +----------------------------------+
+                       alpha_cmd = alpha_ff + delta_alpha
+                                      |
+                                      v
+                          alpha -> (fuel_CdA, ox_CdA)
+                                      |
+                                      v
+                        actuator rate limits / saturations
+                                      |
+                                      v
+                                    plant
+                                      |
+                                      v
+                             Pc, MR, mdot, thrust
+"""
 
 import copy
 import numpy as np
@@ -8,100 +36,88 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from Utilities import set_winplot_dark
-from Physics import PA_PER_PSI, M2_PER_IN2, LBF_PER_N
+from Physics import PA_PER_PSI, LBF_PER_N
 from Network.Components import *
-from Network import TestStand, Balance
-from Controller import TestActuator, PID, apply_error_deadband, ramp, low_pass_filter, step
+from Network import Balance
+from Controller import TestActuator, PID, ramp, low_pass_filter, step, rate_limit
+from HETS import HETS
 
-set_winplot_dark()
+set_winplot_dark() # cool plots format
+
+
+# ============================================================
+# User Inputs / Tunables
+# ============================================================
+
+# --- Simulation time grid ---
+dt = 0.01                                  # controller / plant timestep [s]
+t_final = 10.0                             # total simulation time [s]
+
+# --- Plant Test Stand ---
+test_stand = HETS                          # Choose what test stand you want as a plant
+
+# --- Initial-condition setup ---
+use_initial_balance = True                 # if False, use ts.steady_state() directly       # tolerance for the initial balance solve
+
+# --- Physical actuator limits ---
+fuel_cda_min = 1e-6                        # fuel valve minimum CdA [m^2]
+fuel_cda_max = 1.5e-4                      # fuel valve maximum CdA [m^2]
+fuel_cda_rate_limit = 1.5e-4               # fuel actuator max slew rate [m^2/s]
+
+ox_cda_min = 1e-6                          # ox valve minimum CdA [m^2]
+ox_cda_max = 1.5e-4                        # ox valve maximum CdA [m^2]
+ox_cda_rate_limit = 1.5e-4                 # ox actuator max slew rate [m^2/s]
+
+# --- Alpha map input ---
+alpha_map_filename = "alpha_map.parquet"   # steady-state map file: alpha -> state vector
+
+# --- Pressure command schedule ---
+# DEFINED BELOW
+
+# --- Alpha controller tuning ---
+Kp_alpha = 5.0e-8                          # proportional gain on Pc error
+Ki_alpha = 1.0e-6                          # integral gain on Pc error
+Kd_alpha = 0.0                             # derivative gain on Pc error
+delta_alpha_min = -0.2                     # nominal lower bound on PID output before dynamic update
+delta_alpha_max = 0.2                      # nominal upper bound on PID output before dynamic update
+u_bias_alpha = 0.0                         # PID output bias; keep zero because alpha_ff provides feedforward
+tau_d_alpha = 0.0                          # derivative filter time constant [s]
+du_dt_limit_alpha = 1.0                    # max slew rate of PID output delta_alpha [1/s]
+
+# --- Additional command shaping ---
+tau_pc = 0.0                               # optional low-pass filter on Pc measurement [s]
+alpha_ff_rate_limit = 100.                 # max slew rate of feedforward alpha_ff [1/s]
+
+
 
 
 
 # ============================================================
 # Time Grid
 # ============================================================
-dt = 0.01
-timespan = np.arange(0.0, 10.0 + dt, dt)
-
-
+timespan = np.arange(0.0, t_final + dt, dt)
 
 
 # ============================================================
-# Plant Setup
+# Plant Setup + Build Steady-State Initial Condition
 # ============================================================
-FuelTank = Tank("Fuel Tank", "jet-a", 450 * PA_PER_PSI, 70 / 1000, temperature=300)
-OxTank = Tank("Oxidizer Tank", "LOX", 400 * PA_PER_PSI, 70 / 1000, temperature=90)
+ts = copy.deepcopy(test_stand)
 
-FuelInjectorManifold = InjectorManifold(
-    "Fuel Manifold",
-    350 * PA_PER_PSI,
-    temperature=500,
-    volume=0.1287,
-)
-OxInjectorManifold = InjectorManifold(
-    "Oxidizer Manifold",
-    350 * PA_PER_PSI,
-    temperature=90,
-    volume=0.1287,
-)
-
-Chamber = CombustionChamber(
-    "Main Chamber",
-    300 * PA_PER_PSI,
-    mixture_ratio=2.0,
-    cstar_efficiency=1,
-    volume=6e-2,
-)
-
-Atmosphere = Drain("Ambient")
-
-FuelThrottle = Valve("Fuel Throttle Valve", CdA=0.5e-4)
-OxThrottle = Valve("Oxidizer Throttle Valve", CdA=1.0e-4)
-
-FuelRunline = Line("Fuel Runline", length=5, cross_sectional_area=0.5e-4)
-OxRunline = Line("Oxidizer Runline", length=5, cross_sectional_area=0.5e-4)
-
-FuelInjector = Orifice("Fuel Injector", 0.5e-4)
-OxInjector = Orifice("OxInjector", 1.0e-4)
-
-TCA = Nozzle(
-    "Nozzle",
-    throat_area=6.05 * M2_PER_IN2,
-    contraction_ratio=2,
-    expansion_ratio=4.7,
-    eta_cf=0.95,
-    nfz=2,
-)
-
-HETS = TestStand(
-    "HETS",
-    FuelTank, OxTank,
-    FuelRunline, OxRunline,
-    FuelThrottle, OxThrottle,
-    FuelInjectorManifold, OxInjectorManifold,
-    FuelInjector, OxInjector,
-    Chamber, TCA, Atmosphere
-)
-
-
-# Build Steady-State Initial Condition
-ts = copy.deepcopy(HETS)
-
-MR_balance = Balance(
+initial_balance = Balance(
     tune="OxThrottleValve.CdA",
     measure="MainChamber.MR",
     target=2.3,
     bounds=(1e-6, 1e-4),
     tol=1e-5,
 )
-ss_result = ts.steady_state_with_balance(MR_balance)
+
+if use_initial_balance:
+    ss_result = ts.steady_state_with_balance(initial_balance)
+else:
+    ss_result = ts.steady_state()
+
 if ss_result is not None:
     ts = ss_result
-
-print(ts)
-
-
-
 
 
 # ============================================================
@@ -110,36 +126,26 @@ print(ts)
 fuel_cda_initial = ts.FuelThrottleValve.CdA
 ox_cda_initial = ts.OxThrottleValve.CdA
 
-fuel_cda_min = 1e-6
-fuel_cda_max = 1.5e-4
-fuel_cda_rate_limit = 1.5e-4
-
-ox_cda_min = 1e-6
-ox_cda_max = 1.5e-4
-ox_cda_rate_limit = 1.5e-4
-
 fuel_actuator = TestActuator(
-    initial_value=fuel_cda_initial,
+    initial_value=fuel_cda_initial,        # actuator starts from actual plant valve state
     min_value=fuel_cda_min,
     max_value=fuel_cda_max,
     max_rate=fuel_cda_rate_limit,
 )
 ox_actuator = TestActuator(
-    initial_value=ox_cda_initial,
+    initial_value=ox_cda_initial,          # actuator starts from actual plant valve state
     min_value=ox_cda_min,
     max_value=ox_cda_max,
     max_rate=ox_cda_rate_limit,
 )
 
 extreme = copy.deepcopy(HETS)
-
 result = extreme.check_max_throttlable_condition(
     fuel_CdA_range=(fuel_cda_min, fuel_cda_max),
     ox_CdA_range=(ox_cda_min, ox_cda_max),
 )
 
 print("\n========== MAX THROTTLE CONDITION ==========\n")
-
 print(f"{'MAX FUEL & MAX OX':>25}")
 print(f"  Fuel CdA : {result['fuel_CdA']:.4e} m^2")
 print(f"  Ox CdA   : {result['ox_CdA']:.4e} m^2")
@@ -149,9 +155,9 @@ print("-" * 40)
 
 
 # ============================================================
-# Load alpha map
+# Load Alpha Map
 # ============================================================
-df = pd.read_parquet("alpha_map.parquet")
+df = pd.read_parquet(alpha_map_filename)   # alpha -> [Pc, MR, fuel_CdA, ox_CdA, mdot_f, mdot_ox]
 
 alpha_vec = df["alpha"].values
 Pc_vec = df["Pc"].values
@@ -160,44 +166,48 @@ ox_CdA_vec = df["ox_CdA"].values
 
 
 # ============================================================
-# Alpha Controller (Pc loop)
-# ============================================================
-pid_alpha = PID(
-    Kp=5.0e-8,
-    Ki=2.0e-7,
-    Kd=0.0,
-    u_min=-0.2,
-    u_max=0.2,         
-    u_bias=0.0,  
-    tau_d=0.0,        
-    du_dt_limit=1.0,   # delta_alpha per second
-)
-
-pid_alpha.reset(measurement=ts.MainChamber.p, output=0)
-
-
-
-# ============================================================
 # Schedule Setup
 # ============================================================
 Pc_initial = ts.MainChamber.p
-Pc_final = 300 * PA_PER_PSI
 
 Pc_target_schedule = ramp(
     timespan,
     initial_value=Pc_initial,
-    final_value=Pc_final,
-    t1=0,
-    t2=0.5,
+    final_value=300 * PA_PER_PSI,
+    t1=0.0,
+    t2=1.0,
 )
+
+# Alternative examples:
 '''
 Pc_target_schedule = step(
     timespan,
-    initial_value=ts.MainChamber.p,
-    final_value=300*PA_PER_PSI,
-    t_step=2.0
+    initial_value=Pc_initial,
+    final_value=300 * PA_PER_PSI,
+    t_step=2.0,
 )
 '''
+
+'''
+Pc_target_schedule = np.full_like(timespan, Pc_initial)
+'''
+
+
+# ============================================================
+# Alpha Controller (Pc loop)
+# ============================================================
+pid_alpha = PID(
+    Kp=Kp_alpha,
+    Ki=Ki_alpha,
+    Kd=Kd_alpha,
+    u_min=delta_alpha_min,
+    u_max=delta_alpha_max,
+    u_bias=u_bias_alpha,
+    tau_d=tau_d_alpha,
+    du_dt_limit=du_dt_limit_alpha,         # rate-limit the PID correction delta_alpha
+)
+
+pid_alpha.reset(measurement=ts.MainChamber.p, output=0.0)  # start with zero feedback correction
 
 
 # ============================================================
@@ -230,6 +240,7 @@ alpha_ff_hist = np.zeros_like(timespan)
 delta_alpha_hist = np.zeros_like(timespan)
 alpha_cmd_hist = np.zeros_like(timespan)
 
+
 # ============================================================
 # Initial Storage
 # ============================================================
@@ -242,6 +253,7 @@ ox_inj_pressure[0] = ts.OxInjectorManifold.p
 fuel_inj_mdot[0] = ts.FuelInjector.mdot
 ox_inj_mdot[0] = ts.OxInjector.mdot
 
+Pc_filt = ts.MainChamber.p                # filtered Pc state for optional measurement filtering
 chamber_pressure[0] = ts.MainChamber.p
 mixture_ratio[0] = ts.MainChamber.MR
 tca_mdot[0] = ts.TCA.mdot
@@ -256,48 +268,41 @@ Pc_error_hist[0] = Pc_target_schedule[0] - ts.MainChamber.p
 Pc_integral_hist[0] = pid_alpha.integral
 Pc_dmeas_hist[0] = 0.0
 
-alpha_ff_hist[0] = np.interp(Pc_target_schedule[0], Pc_vec, alpha_vec)
+alpha_ff_state = np.interp(Pc_target_schedule[0], Pc_vec, alpha_vec)  # initial feedforward throttle level
+alpha_ff_hist[0] = alpha_ff_state
 delta_alpha_hist[0] = 0.0
-alpha_cmd_hist[0] = np.clip(alpha_ff_hist[0], 0.0, 1.0)
+alpha_cmd_hist[0] = np.clip(alpha_ff_state, 0.0, 1.0)
+
 
 # ============================================================
 # Closed-Loop Simulation
 # ============================================================
-
-Pc_filt = ts.MainChamber.p
-tau_pc = 0.0
-
 for i, t in enumerate(timespan[:-1]):
 
-    # --------------------------------------------
-    # Current measurement
-    # --------------------------------------------
     Pc_raw = ts.MainChamber.p
 
     if tau_pc > 0.0:
-        Pc_filt = low_pass_filter(Pc_filt, Pc_raw, dt, tau_pc)
+        Pc_filt = low_pass_filter(Pc_filt, Pc_raw, dt, tau_pc)  # optional sensor filtering
     else:
         Pc_filt = Pc_raw
 
     Pc_measured = Pc_filt
-
     Pc_target = Pc_target_schedule[i]
 
-    # --------------------------------------------
-    # Feedforward (Pc -> alpha)
-    # --------------------------------------------
-    alpha_ff = np.interp(Pc_target, Pc_vec, alpha_vec)
+    alpha_ff_target = np.interp(Pc_target, Pc_vec, alpha_vec)   # steady-state throttle level for target Pc
 
-    # Ensure alpha_cmd stays within physical bounds [0, 1]:
-    # alpha_cmd = alpha_ff + delta_alpha ∈ [0, 1]
-    # ⇒ delta_alpha ∈ [-alpha_ff, 1 - alpha_ff]
+    alpha_ff_state = rate_limit(
+        prev_value=alpha_ff_state,
+        target_value=alpha_ff_target,
+        dt=dt,
+        max_rate=alpha_ff_rate_limit,                           # smooth feedforward so steady-state map is not applied instantly
+    )
+    alpha_ff = alpha_ff_state
+
+    # Keep alpha_cmd = alpha_ff + delta_alpha inside [0, 1].
     pid_alpha.u_min = -alpha_ff
     pid_alpha.u_max = 1.0 - alpha_ff
 
-
-    # --------------------------------------------
-    # Feedback (PID on Pc)
-    # --------------------------------------------
     delta_alpha, err_pc, integ_pc, dmeas_pc = pid_alpha.update(
         target=Pc_target,
         measurement=Pc_measured,
@@ -305,36 +310,22 @@ for i, t in enumerate(timespan[:-1]):
     )
 
     alpha_cmd = alpha_ff + delta_alpha
-
-    # just in case, as a safety check:
     alpha_cmd = np.clip(alpha_cmd, 0.0, 1.0)
 
-    # --------------------------------------------
-    # Alpha -> valve trims
-    # --------------------------------------------
-    fuel_trim = np.interp(alpha_cmd, alpha_vec, fuel_CdA_vec)
-    ox_trim = np.interp(alpha_cmd, alpha_vec, ox_CdA_vec)
+    fuel_trim = np.interp(alpha_cmd, alpha_vec, fuel_CdA_vec)  # map commanded alpha to coordinated fuel valve trim
+    ox_trim = np.interp(alpha_cmd, alpha_vec, ox_CdA_vec)      # map commanded alpha to coordinated ox valve trim
 
     fuel_throttle_unsat[i + 1] = fuel_trim
     ox_throttle_unsat[i + 1] = ox_trim
 
-    # --------------------------------------------
-    # Actuator dynamics
-    # --------------------------------------------
-    fuel_cmd = fuel_actuator.update(fuel_trim, dt)
+    fuel_cmd = fuel_actuator.update(fuel_trim, dt)             # actuator enforces valve bounds + rate limit
     ox_cmd = ox_actuator.update(ox_trim, dt)
 
     ts.FuelThrottleValve.CdA = fuel_cmd
     ts.OxThrottleValve.CdA = ox_cmd
 
-    # --------------------------------------------
-    # Advance plant
-    # --------------------------------------------
     ts = ts.timestep(dt=dt)
 
-    # --------------------------------------------
-    # Store plant histories
-    # --------------------------------------------
     fuel_sys_mdot[i + 1] = ts.FuelRunline.mdot
     ox_sys_mdot[i + 1] = ts.OxRunline.mdot
 
@@ -352,9 +343,6 @@ for i, t in enumerate(timespan[:-1]):
     fuel_throttle_cmd[i + 1] = ts.FuelThrottleValve.CdA
     ox_throttle_cmd[i + 1] = ts.OxThrottleValve.CdA
 
-    # --------------------------------------------
-    # Store controller histories
-    # --------------------------------------------
     Pc_error_hist[i + 1] = err_pc
     Pc_integral_hist[i + 1] = integ_pc
     Pc_dmeas_hist[i + 1] = dmeas_pc
@@ -362,7 +350,6 @@ for i, t in enumerate(timespan[:-1]):
     alpha_ff_hist[i + 1] = alpha_ff
     delta_alpha_hist[i + 1] = delta_alpha
     alpha_cmd_hist[i + 1] = alpha_cmd
-
 
 print(ts)
 
@@ -681,7 +668,3 @@ axs_chamber[3].grid(alpha=0.3)
 fig_chamber.tight_layout()
 
 plt.show()
-
-
-
-

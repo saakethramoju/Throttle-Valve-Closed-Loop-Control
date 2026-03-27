@@ -1,4 +1,3 @@
-
 import copy
 import numpy as np
 import matplotlib.pyplot as plt
@@ -65,25 +64,3 @@ HETS = TestStand(
     FuelInjector, OxInjector,
     Chamber, TCA, Atmosphere
 )
-
-
-# Build Steady-State Initial Condition
-ts = copy.deepcopy(HETS)
-
-
-pcmr_map = ts.generate_PcMR_map(
-    MR_target=2.0,
-    Pc_min=250 * PA_PER_PSI,
-    Pc_max=310 * PA_PER_PSI,
-    Pc_step=1 * PA_PER_PSI,
-    fuel_CdA_range=(1.0e-6, 1.5e-4),
-    ox_CdA_range=(1.0e-6, 1.5e-4),
-    return_dataframe = True,
-    save_parquet = True,
-    parquet_filename = filename,
-    verbose=False,
-)
-
-
-df = pd.read_parquet(filename)
-print(df.head())

@@ -1,3 +1,19 @@
+'''
+
+INSTRUCTIONS TO RUN THIS FILE:
+
+Becuase this file is not in the root directory and has relative imports
+running it is not as easy just hitting run.
+
+In the command terminal for the root directory (the overall project folder), run:
+
+---> python3 -m Tests.test_steady
+
+(replace 'python3' with just 'python' if you're not using Python 3)
+
+'''
+
+
 import numpy as np
 import matplotlib.pyplot as plt
 from Utilities import set_winplot_dark, solve_system_CdAs, get_density, get_pressure
