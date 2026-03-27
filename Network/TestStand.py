@@ -9,7 +9,7 @@ from .Components import *
 from Utilities import choked_nozzle_thrust, choked_nozzle_mass_flow, get_chamber_pressure
 from Utilities import incompressible_CdA_equation, get_density, get_pressure
 from Utilities import get_cached_CEA
-from Physics.Constants import *
+from Utilities.Constants import *
 
 from .Balance import Balance
 

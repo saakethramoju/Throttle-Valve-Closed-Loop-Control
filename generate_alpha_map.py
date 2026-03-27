@@ -2,7 +2,7 @@
 import copy
 from HETS import HETS
 
-from Physics import PA_PER_PSI
+from Utilities.Constants import PA_PER_PSI
 
 
 # --- Inputs ---

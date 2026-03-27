@@ -55,6 +55,8 @@ t_final = 10.0                             # total simulation time [s]
 
 # --- Plant Test Stand ---
 test_stand = HETS                          # Choose what test stand you want as a plant (probably HETS)
+print_initial_condition = True 
+print_final_condition = True            
 
 # --- Initial-condition setup ---
 use_initial_balance = True                 # if False, use ts.steady_state() directly (balance can be edited below) 
@@ -68,6 +70,7 @@ ox_cmd_min = 1e-6                          # minimum commanded value [units]
 ox_cmd_max = 1.5e-4                        # maximum commanded value [units]
 ox_cmd_rate_limit = 1.5e-4                 # max actuator rate [units/s]
 
+
 # --- Alpha map input ---
 alpha_map_filename = "alpha_map.parquet"   # steady-state map file: alpha -> state vector
 
@@ -77,12 +80,12 @@ alpha_map_filename = "alpha_map.parquet"   # steady-state map file: alpha -> sta
 # --- Alpha controller tuning ---
 Kp_alpha = 5.0e-8                          # proportional gain on Pc error
 Ki_alpha = 1.0e-6                          # integral gain on Pc error
-Kd_alpha = 0.0                             # derivative gain on Pc error
+Kd_alpha = 0                               # derivative gain on Pc error
 delta_alpha_min = -0.2                     # nominal lower bound on PID output (delta_alpha) before dynamic update (what is max that -d_alpha can be per dt)
 delta_alpha_max = 0.2                      # nominal upper bound on PID output (delta_alpha) before dynamic update (what is max that +d_alpha can be per dt)
 u_bias_alpha = 0.0                         # PID output bias; keep zero because alpha_ff provides feedforward (what alpha should PID immediately try to jump to every dt)
-tau_d_alpha = 0.0                          # derivative filter time constant [s] (low pass filter on d_error / dt since the derivative can be noisy)
-du_dt_limit_alpha = 1.0                    # max slew rate of PID output delta_alpha [1/s] (what is maximum that d_alpha/dt can be per dt)
+tau_d_alpha = 0.5                          # derivative filter time constant [s] (low pass filter on d_error / dt since the derivative can be noisy)
+du_dt_limit_alpha = 100.0                  # max slew rate of PID output delta_alpha [1/s] (what is maximum that d_alpha/dt can be per dt)
 
 # --- Additional command shaping ---
 tau_pc = 0.0                               # optional low-pass filter on Pc measurement [s] (could simulate an actual low pass filter on CHPT)
@@ -118,6 +121,9 @@ else:
 
 if ss_result is not None:
     ts = ss_result
+
+if print_initial_condition:
+    print(ts)
 
 
 # ============================================================
@@ -351,7 +357,9 @@ for i, t in enumerate(timespan[:-1]):
     delta_alpha_hist[i + 1] = delta_alpha
     alpha_cmd_hist[i + 1] = alpha_cmd
 
-print(ts)
+
+if print_final_condition:
+    print(ts)
 
 
 # ============================================================
