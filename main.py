@@ -54,19 +54,19 @@ dt = 0.01                                  # controller / plant timestep [s]
 t_final = 10.0                             # total simulation time [s]
 
 # --- Plant Test Stand ---
-test_stand = HETS                          # Choose what test stand you want as a plant
+test_stand = HETS                          # Choose what test stand you want as a plant (probably HETS)
 
 # --- Initial-condition setup ---
-use_initial_balance = True                 # if False, use ts.steady_state() directly       # tolerance for the initial balance solve
+use_initial_balance = True                 # if False, use ts.steady_state() directly (balance can be edited below) 
 
-# --- Physical actuator limits ---
-fuel_cda_min = 1e-6                        # fuel valve minimum CdA [m^2]
-fuel_cda_max = 1.5e-4                      # fuel valve maximum CdA [m^2]
-fuel_cda_rate_limit = 1.5e-4               # fuel actuator max slew rate [m^2/s]
+# --- Actuator limits ---
+fuel_cmd_min = 1e-6                        # minimum commanded value [units]
+fuel_cmd_max = 1.5e-4                      # maximum commanded value [units]
+fuel_cmd_rate_limit = 1.5e-4               # max actuator rate [units/s]
 
-ox_cda_min = 1e-6                          # ox valve minimum CdA [m^2]
-ox_cda_max = 1.5e-4                        # ox valve maximum CdA [m^2]
-ox_cda_rate_limit = 1.5e-4                 # ox actuator max slew rate [m^2/s]
+ox_cmd_min = 1e-6                          # minimum commanded value [units]
+ox_cmd_max = 1.5e-4                        # maximum commanded value [units]
+ox_cmd_rate_limit = 1.5e-4                 # max actuator rate [units/s]
 
 # --- Alpha map input ---
 alpha_map_filename = "alpha_map.parquet"   # steady-state map file: alpha -> state vector
@@ -78,15 +78,15 @@ alpha_map_filename = "alpha_map.parquet"   # steady-state map file: alpha -> sta
 Kp_alpha = 5.0e-8                          # proportional gain on Pc error
 Ki_alpha = 1.0e-6                          # integral gain on Pc error
 Kd_alpha = 0.0                             # derivative gain on Pc error
-delta_alpha_min = -0.2                     # nominal lower bound on PID output before dynamic update
-delta_alpha_max = 0.2                      # nominal upper bound on PID output before dynamic update
-u_bias_alpha = 0.0                         # PID output bias; keep zero because alpha_ff provides feedforward
-tau_d_alpha = 0.0                          # derivative filter time constant [s]
-du_dt_limit_alpha = 1.0                    # max slew rate of PID output delta_alpha [1/s]
+delta_alpha_min = -0.2                     # nominal lower bound on PID output (delta_alpha) before dynamic update (what is max that -d_alpha can be per dt)
+delta_alpha_max = 0.2                      # nominal upper bound on PID output (delta_alpha) before dynamic update (what is max that +d_alpha can be per dt)
+u_bias_alpha = 0.0                         # PID output bias; keep zero because alpha_ff provides feedforward (what alpha should PID immediately try to jump to every dt)
+tau_d_alpha = 0.0                          # derivative filter time constant [s] (low pass filter on d_error / dt since the derivative can be noisy)
+du_dt_limit_alpha = 1.0                    # max slew rate of PID output delta_alpha [1/s] (what is maximum that d_alpha/dt can be per dt)
 
 # --- Additional command shaping ---
-tau_pc = 0.0                               # optional low-pass filter on Pc measurement [s]
-alpha_ff_rate_limit = 100.                 # max slew rate of feedforward alpha_ff [1/s]
+tau_pc = 0.0                               # optional low-pass filter on Pc measurement [s] (could simulate an actual low pass filter on CHPT)
+alpha_ff_rate_limit = 100.                 # max slew rate of feedforward alpha_ff [1/s] (could simulate an actual low pass filter on CHPT)
 
 
 
@@ -128,21 +128,21 @@ ox_cda_initial = ts.OxThrottleValve.CdA
 
 fuel_actuator = TestActuator(
     initial_value=fuel_cda_initial,        # actuator starts from actual plant valve state
-    min_value=fuel_cda_min,
-    max_value=fuel_cda_max,
-    max_rate=fuel_cda_rate_limit,
+    min_value=fuel_cmd_min,
+    max_value=fuel_cmd_max,
+    max_rate=fuel_cmd_rate_limit,
 )
 ox_actuator = TestActuator(
     initial_value=ox_cda_initial,          # actuator starts from actual plant valve state
-    min_value=ox_cda_min,
-    max_value=ox_cda_max,
-    max_rate=ox_cda_rate_limit,
+    min_value=ox_cmd_min,
+    max_value=ox_cmd_max,
+    max_rate=ox_cmd_rate_limit,
 )
 
 extreme = copy.deepcopy(HETS)
 result = extreme.check_max_throttlable_condition(
-    fuel_CdA_range=(fuel_cda_min, fuel_cda_max),
-    ox_CdA_range=(ox_cda_min, ox_cda_max),
+    fuel_CdA_range=(fuel_cmd_min, fuel_cmd_max),
+    ox_CdA_range=(ox_cmd_min, ox_cmd_max),
 )
 
 print("\n========== MAX THROTTLE CONDITION ==========\n")

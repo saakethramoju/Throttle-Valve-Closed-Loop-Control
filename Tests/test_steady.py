@@ -218,7 +218,7 @@ MR_balance = Balance(
     bounds=(1e-6, 1e-4),
     tol=1e-5,   #
 )
-#solved = HETS.steady_state_with_balance(MR_balance)
+solved = HETS.steady_state_with_balance(MR_balance)
 
 
 FuelStiffness20 = Balance(
