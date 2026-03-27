@@ -23,6 +23,6 @@ pcmr_map = ts.generate_PcMR_map(
     return_dataframe = True,            # If you want the map as a pandas dataframe
     save_parquet = True,                # Make this True if you want a parquet file
     parquet_filename = filename,        # parquet file names
-    verbose=False,                      # Set this to true if you want to see if the generation failed
+    verbose=True,                      # Set this to true if you want to see if the generation failed
 )
 

@@ -36,7 +36,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from Utilities import set_winplot_dark
-from Physics import PA_PER_PSI, LBF_PER_N
+from Utilities.Constants import PA_PER_PSI, LBF_PER_N
 from Network.Components import *
 from Network import Balance
 from Controller import TestActuator, PID, ramp, low_pass_filter, step, rate_limit
@@ -84,7 +84,7 @@ Kd_alpha = 0                               # derivative gain on Pc error
 delta_alpha_min = -0.2                     # nominal lower bound on PID output (delta_alpha) before dynamic update (what is max that -d_alpha can be per dt)
 delta_alpha_max = 0.2                      # nominal upper bound on PID output (delta_alpha) before dynamic update (what is max that +d_alpha can be per dt)
 u_bias_alpha = 0.0                         # PID output bias; keep zero because alpha_ff provides feedforward (what alpha should PID immediately try to jump to every dt)
-tau_d_alpha = 0.5                          # derivative filter time constant [s] (low pass filter on d_error / dt since the derivative can be noisy)
+tau_d_alpha = 0.0                          # derivative filter time constant [s] (low pass filter on d_error / dt since the derivative can be noisy)
 du_dt_limit_alpha = 100.0                  # max slew rate of PID output delta_alpha [1/s] (what is maximum that d_alpha/dt can be per dt)
 
 # --- Additional command shaping ---
@@ -109,7 +109,7 @@ ts = copy.deepcopy(test_stand)
 initial_balance = Balance(
     tune="OxThrottleValve.CdA",
     measure="MainChamber.MR",
-    target=2.3,
+    target=2,
     bounds=(1e-6, 1e-4),
     tol=1e-5,
 )
