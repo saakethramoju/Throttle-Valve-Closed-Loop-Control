@@ -1,5 +1,10 @@
+'''
+
+'''
+
 import copy
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 
 from Utilities import set_winplot_dark
@@ -11,11 +16,14 @@ from Controller import TestActuator, PID, apply_error_deadband, ramp, low_pass_f
 set_winplot_dark()
 
 
+
 # ============================================================
 # Time Grid
 # ============================================================
 dt = 0.01
 timespan = np.arange(0.0, 10.0 + dt, dt)
+
+
 
 
 # ============================================================
@@ -76,15 +84,13 @@ HETS = TestStand(
 )
 
 
-# ============================================================
 # Build Steady-State Initial Condition
-# ============================================================
 ts = copy.deepcopy(HETS)
 
 MR_balance = Balance(
     tune="OxThrottleValve.CdA",
     measure="MainChamber.MR",
-    target=2,
+    target=2.3,
     bounds=(1e-6, 1e-4),
     tol=1e-5,
 )
@@ -97,6 +103,7 @@ print(ts)
 
 
 
+
 # ============================================================
 # Actuator Setup
 # ============================================================
@@ -105,11 +112,11 @@ ox_cda_initial = ts.OxThrottleValve.CdA
 
 fuel_cda_min = 1e-6
 fuel_cda_max = 1.5e-4
-fuel_cda_rate_limit = 1.0e-4
+fuel_cda_rate_limit = 1.5e-4
 
 ox_cda_min = 1e-6
 ox_cda_max = 1.5e-4
-ox_cda_rate_limit = 1.0e-4
+ox_cda_rate_limit = 1.5e-4
 
 fuel_actuator = TestActuator(
     initial_value=fuel_cda_initial,
@@ -140,129 +147,49 @@ print(f"  Pc       : {result['Pc'] / PA_PER_PSI:8.2f} psia")
 print(f"  MR       : {result['MR']:.4f}")
 print("-" * 40)
 
+
 # ============================================================
-# Controller Setup
+# Load alpha map
 # ============================================================
+df = pd.read_parquet("alpha_map.parquet")
 
-# Trim (operating point)
-# These are the steady-state valve positions that already
-# produce the desired operating condition (Pc, MR).
-# The controller will only apply *deviations* around these.
-fuel_trim = fuel_cda_initial
-ox_trim = ox_cda_initial
-
-
-# Compute allowable virtual control ranges
-# We define control in "virtual channels":
-#   u_sum  -> common-mode (changes total flow → mainly affects Pc)
-#   u_diff -> differential (shifts fuel vs ox → mainly affects MR)
-#
-# But the *real constraints* exist on the physical valves.
-# So we must map valve limits → allowable u_sum/u_diff ranges.
-
-# Available margin before hitting physical valve limits
-fuel_up_margin = fuel_cda_max - fuel_trim      # how much fuel can increase
-fuel_down_margin = fuel_trim - fuel_cda_min    # how much fuel can decrease
-
-ox_up_margin = ox_cda_max - ox_trim
-ox_down_margin = ox_trim - ox_cda_min
+alpha_vec = df["alpha"].values
+Pc_vec = df["Pc"].values
+fuel_CdA_vec = df["fuel_CdA"].values
+ox_CdA_vec = df["ox_CdA"].values
 
 
-# u_sum limits (common-mode motion)
-# u_sum increases/decreases BOTH valves together:
-#   fuel = +u_sum
-#   ox   = +u_sum
-#
-# So the limit is whichever valve hits its bound first.
-u_sum_max = min(fuel_up_margin, ox_up_margin)
-u_sum_min = -min(fuel_down_margin, ox_down_margin)
-
-
-# u_diff limits (differential motion)
-# u_diff redistributes flow between fuel and ox:
-#   fuel = -u_diff
-#   ox   = +u_diff
-#
-# So:
-#   u_diff > 0 → fuel decreases, ox increases
-#   u_diff < 0 → fuel increases, ox decreases
-#
-# Limits are asymmetric because each direction hits different bounds.
-
-# Max positive u_diff (fuel ↓, ox ↑)
-u_diff_max = min(fuel_down_margin, ox_up_margin)
-
-# Max negative u_diff (fuel ↑, ox ↓)
-u_diff_min = -min(fuel_up_margin, ox_down_margin)
-
-
-# Pressure controller (u_sum)
-# Controls chamber pressure via total mass flow.
-#
-# Key tuning idea:
-#   Pc sensitivity to CdA is VERY large → small gains required
-#   Integral action is critical to remove steady-state error
-'''pid_u_sum = PID(
-    Kp=1.0e-10,
-    Ki=3.5e-10,
-    Kd=1e-10,
-    u_min=u_sum_min,
-    u_max=u_sum_max,
-    u_bias=0.0,   # no offset; trim already handles steady-state
-)
-'''
-pid_u_sum = PID(
-    Kp=1.0e-10,
-    Ki=3.5e-10,
-    Kd=5.0e-11,
-    u_min=u_sum_min,
-    u_max=u_sum_max,
-    u_bias=0.0,
-    tau_d=0.001,
+# ============================================================
+# Alpha Controller (Pc loop)
+# ============================================================
+pid_alpha = PID(
+    Kp=5.0e-8,
+    Ki=2.0e-7,
+    Kd=0.0,
+    u_min=-0.2,
+    u_max=0.2,         
+    u_bias=0.0,  
+    tau_d=0.0,        
+    du_dt_limit=1.0,   # delta_alpha per second
 )
 
-# Mixture ratio controller (u_diff)
-# Controls MR by shifting flow between fuel and oxidizer.
-#
-# Key tuning idea:
-#   MR is much less sensitive → larger gains than Pc loop
-#   Too aggressive → causes throttle oscillations (especially in ox)
-pid_u_diff = PID(
-    Kp=5.0e-5,
-    Ki=3.0e-5,
-    Kd=0,
-    u_min=u_diff_min,
-    u_max=u_diff_max,
-    u_bias=0.0,
-)
-
-# Initialize integrators so there is no artificial "startup kick".
-# We pass the current measurement so initial error = 0.
-pid_u_sum.reset(measurement=ts.MainChamber.p)
-pid_u_diff.reset(measurement=ts.MainChamber.MR)
+pid_alpha.reset(measurement=ts.MainChamber.p, output=0)
 
 
 
 # ============================================================
 # Schedule Setup
 # ============================================================
+Pc_initial = ts.MainChamber.p
+Pc_final = 300 * PA_PER_PSI
 
 Pc_target_schedule = ramp(
     timespan,
-    initial_value=ts.MainChamber.p,
-    final_value=260*PA_PER_PSI,
-    t1=2.0,
-    t2=3.0,
+    initial_value=Pc_initial,
+    final_value=Pc_final,
+    t1=0,
+    t2=0.5,
 )
-'''
-MR_target_schedule = ramp(
-    timespan,
-    initial_value=ts.MainChamber.MR,
-    final_value=2.0,
-    t1=2.0,
-    t2=4.0,
-)
-'''
 '''
 Pc_target_schedule = step(
     timespan,
@@ -271,11 +198,10 @@ Pc_target_schedule = step(
     t_step=2.0
 )
 '''
-MR_target_schedule = np.full_like(timespan, 2)
 
 
 # ============================================================
-# History Arrays
+# Storage
 # ============================================================
 fuel_sys_mdot = np.zeros_like(timespan)
 ox_sys_mdot = np.zeros_like(timespan)
@@ -296,18 +222,17 @@ ox_throttle_cmd = np.zeros_like(timespan)
 fuel_throttle_unsat = np.zeros_like(timespan)
 ox_throttle_unsat = np.zeros_like(timespan)
 
-u_sum_hist = np.zeros_like(timespan)
-u_diff_hist = np.zeros_like(timespan)
+Pc_error_hist = np.zeros_like(timespan)
+Pc_integral_hist = np.zeros_like(timespan)
+Pc_dmeas_hist = np.zeros_like(timespan)
 
-pc_error_hist = np.zeros_like(timespan)
-mr_error_hist = np.zeros_like(timespan)
+alpha_ff_hist = np.zeros_like(timespan)
+delta_alpha_hist = np.zeros_like(timespan)
+alpha_cmd_hist = np.zeros_like(timespan)
 
-pc_integral_hist = np.zeros_like(timespan)
-mr_integral_hist = np.zeros_like(timespan)
-
-pc_dmeas_hist = np.zeros_like(timespan)
-mr_dmeas_hist = np.zeros_like(timespan)
-
+# ============================================================
+# Initial Storage
+# ============================================================
 fuel_sys_mdot[0] = ts.FuelRunline.mdot
 ox_sys_mdot[0] = ts.OxRunline.mdot
 
@@ -322,65 +247,94 @@ mixture_ratio[0] = ts.MainChamber.MR
 tca_mdot[0] = ts.TCA.mdot
 thrust[0] = ts.TCA.F
 
-fuel_throttle_cmd[0] = fuel_trim
-ox_throttle_cmd[0] = ox_trim
-fuel_throttle_unsat[0] = fuel_trim
-ox_throttle_unsat[0] = ox_trim
+fuel_throttle_cmd[0] = ts.FuelThrottleValve.CdA
+ox_throttle_cmd[0] = ts.OxThrottleValve.CdA
+fuel_throttle_unsat[0] = ts.FuelThrottleValve.CdA
+ox_throttle_unsat[0] = ts.OxThrottleValve.CdA
 
+Pc_error_hist[0] = Pc_target_schedule[0] - ts.MainChamber.p
+Pc_integral_hist[0] = pid_alpha.integral
+Pc_dmeas_hist[0] = 0.0
 
-Pc_filt = ts.MainChamber.p
-MR_filt = ts.MainChamber.MR
-
-
+alpha_ff_hist[0] = np.interp(Pc_target_schedule[0], Pc_vec, alpha_vec)
+delta_alpha_hist[0] = 0.0
+alpha_cmd_hist[0] = np.clip(alpha_ff_hist[0], 0.0, 1.0)
 
 # ============================================================
 # Closed-Loop Simulation
 # ============================================================
+
+Pc_filt = ts.MainChamber.p
+tau_pc = 0.0
+
 for i, t in enumerate(timespan[:-1]):
 
+    # --------------------------------------------
+    # Current measurement
+    # --------------------------------------------
     Pc_raw = ts.MainChamber.p
-    MR_raw = ts.MainChamber.MR
 
-    Pc_filt = low_pass_filter(Pc_filt, Pc_raw, dt, tau=0.0)
-    MR_filt = low_pass_filter(MR_filt, MR_raw, dt, tau=0.0)
+    if tau_pc > 0.0:
+        Pc_filt = low_pass_filter(Pc_filt, Pc_raw, dt, tau_pc)
+    else:
+        Pc_filt = Pc_raw
 
     Pc_measured = Pc_filt
-    MR_measured = MR_filt
 
     Pc_target = Pc_target_schedule[i]
-    MR_target = MR_target_schedule[i]
 
-    Pc_target_eff = apply_error_deadband(Pc_target, Pc_measured, 2.0e3)
-    MR_target_eff = apply_error_deadband(MR_target, MR_measured, 0.008)
+    # --------------------------------------------
+    # Feedforward (Pc -> alpha)
+    # --------------------------------------------
+    alpha_ff = np.interp(Pc_target, Pc_vec, alpha_vec)
 
-    u_sum, e_pc, i_pc, d_pc = pid_u_sum.update(
-        target=Pc_target_eff,
+    # Ensure alpha_cmd stays within physical bounds [0, 1]:
+    # alpha_cmd = alpha_ff + delta_alpha ∈ [0, 1]
+    # ⇒ delta_alpha ∈ [-alpha_ff, 1 - alpha_ff]
+    pid_alpha.u_min = -alpha_ff
+    pid_alpha.u_max = 1.0 - alpha_ff
+
+
+    # --------------------------------------------
+    # Feedback (PID on Pc)
+    # --------------------------------------------
+    delta_alpha, err_pc, integ_pc, dmeas_pc = pid_alpha.update(
+        target=Pc_target,
         measurement=Pc_measured,
         dt=dt,
     )
 
-    u_diff, e_mr, i_mr, d_mr = pid_u_diff.update(
-        target=MR_target_eff,
-        measurement=MR_measured,
-        dt=dt,
-    )
+    alpha_cmd = alpha_ff + delta_alpha
 
-    # Physical mixer
-    fuel_cmd_unsat = fuel_trim + u_sum - u_diff
-    ox_cmd_unsat = ox_trim + u_sum + u_diff
+    # just in case, as a safety check:
+    alpha_cmd = np.clip(alpha_cmd, 0.0, 1.0)
 
+    # --------------------------------------------
+    # Alpha -> valve trims
+    # --------------------------------------------
+    fuel_trim = np.interp(alpha_cmd, alpha_vec, fuel_CdA_vec)
+    ox_trim = np.interp(alpha_cmd, alpha_vec, ox_CdA_vec)
+
+    fuel_throttle_unsat[i + 1] = fuel_trim
+    ox_throttle_unsat[i + 1] = ox_trim
+
+    # --------------------------------------------
     # Actuator dynamics
-    fuel_cmd_actual = fuel_actuator.update(fuel_cmd_unsat, dt)
-    ox_cmd_actual = ox_actuator.update(ox_cmd_unsat, dt)
+    # --------------------------------------------
+    fuel_cmd = fuel_actuator.update(fuel_trim, dt)
+    ox_cmd = ox_actuator.update(ox_trim, dt)
 
-    # Apply commands to plant
-    ts.FuelThrottleValve.CdA = fuel_cmd_actual
-    ts.OxThrottleValve.CdA = ox_cmd_actual
+    ts.FuelThrottleValve.CdA = fuel_cmd
+    ts.OxThrottleValve.CdA = ox_cmd
 
+    # --------------------------------------------
     # Advance plant
+    # --------------------------------------------
     ts = ts.timestep(dt=dt)
 
-    # Save plant histories
+    # --------------------------------------------
+    # Store plant histories
+    # --------------------------------------------
     fuel_sys_mdot[i + 1] = ts.FuelRunline.mdot
     ox_sys_mdot[i + 1] = ts.OxRunline.mdot
 
@@ -395,30 +349,22 @@ for i, t in enumerate(timespan[:-1]):
     tca_mdot[i + 1] = ts.TCA.mdot
     thrust[i + 1] = ts.TCA.F
 
-    fuel_throttle_cmd[i + 1] = fuel_cmd_actual
-    ox_throttle_cmd[i + 1] = ox_cmd_actual
-    fuel_throttle_unsat[i + 1] = fuel_cmd_unsat
-    ox_throttle_unsat[i + 1] = ox_cmd_unsat
+    fuel_throttle_cmd[i + 1] = ts.FuelThrottleValve.CdA
+    ox_throttle_cmd[i + 1] = ts.OxThrottleValve.CdA
 
-    # Save controller histories
-    u_sum_hist[i + 1] = u_sum
-    u_diff_hist[i + 1] = u_diff
+    # --------------------------------------------
+    # Store controller histories
+    # --------------------------------------------
+    Pc_error_hist[i + 1] = err_pc
+    Pc_integral_hist[i + 1] = integ_pc
+    Pc_dmeas_hist[i + 1] = dmeas_pc
 
-    pc_error_hist[i + 1] = e_pc
-    mr_error_hist[i + 1] = e_mr
-
-    pc_integral_hist[i + 1] = i_pc
-    mr_integral_hist[i + 1] = i_mr
-
-    pc_dmeas_hist[i + 1] = d_pc
-    mr_dmeas_hist[i + 1] = d_mr
+    alpha_ff_hist[i + 1] = alpha_ff
+    delta_alpha_hist[i + 1] = delta_alpha
+    alpha_cmd_hist[i + 1] = alpha_cmd
 
 
-
-
-
-
-
+print(ts)
 
 
 # ============================================================
@@ -447,17 +393,14 @@ control_colors = {
     "pc_error": "#00BFFF",
     "pc_integral": "#FF6EC7",
     "pc_dmeas": "#00FFFF",
-    "mr_error": "#39FF14",
-    "mr_integral": "#FF00FF",
-    "mr_dmeas": "#00BFFF",
+    "alpha_ff": "#FFD700",
+    "delta_alpha": "#FF69B4",
+    "alpha_cmd": "#7DF9FF",
     "fuel_unsat": "#FFFFFF",
     "fuel_actual": "#AAAAAA",
     "ox_unsat": "#FF3131",
     "ox_actual": "#FFA500",
     "pc_target": "#FFD700",
-    "mr_target": "#FFD700",
-    "u_sum": "#7DF9FF",
-    "u_diff": "#FF69B4",
 }
 
 fuel_sched_color = "#FFFFFF"
@@ -504,9 +447,9 @@ def add_ox_throttle_overlay(ax):
 
 
 # -------------------------
-# Figure 1: Control loops
+# Figure 1: Control loop
 # -------------------------
-fig_control, axs_control = plt.subplots(4, 1, figsize=(10, 12), sharex=True)
+fig_control, axs_control = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
 
 axs_control[0].plot(
     timespan,
@@ -530,91 +473,56 @@ axs_control[0].legend()
 
 axs_control[1].plot(
     timespan,
-    mixture_ratio,
-    color=chamber_colors["mr"],
+    Pc_error_hist,
+    color=control_colors["pc_error"],
     linewidth=2,
-    label="Measured MR",
+    label="Pc error",
 )
 axs_control[1].plot(
     timespan,
-    MR_target_schedule,
-    color=control_colors["mr_target"],
-    linestyle="--",
+    Pc_integral_hist,
+    color=control_colors["pc_integral"],
     linewidth=2,
-    label="Target MR",
+    label="Pc integral",
 )
-axs_control[1].set_ylabel("MR")
-axs_control[1].set_title("Mixture Ratio Tracking")
+axs_control[1].plot(
+    timespan,
+    Pc_dmeas_hist,
+    color=control_colors["pc_dmeas"],
+    linewidth=2,
+    label="d(Pc)/dt term",
+)
+axs_control[1].set_ylabel("Pc Loop State")
+axs_control[1].set_title("Pressure PID Internal States")
 axs_control[1].grid(alpha=0.3)
 axs_control[1].legend()
 
 axs_control[2].plot(
     timespan,
-    pc_error_hist,
-    color=control_colors["pc_error"],
+    alpha_ff_hist,
+    color=control_colors["alpha_ff"],
     linewidth=2,
-    label="Pc error",
+    label="alpha_ff",
 )
 axs_control[2].plot(
     timespan,
-    pc_integral_hist,
-    color=control_colors["pc_integral"],
+    delta_alpha_hist,
+    color=control_colors["delta_alpha"],
     linewidth=2,
-    label="Pc integral",
+    label="delta_alpha",
 )
 axs_control[2].plot(
     timespan,
-    pc_dmeas_hist,
-    color=control_colors["pc_dmeas"],
+    alpha_cmd_hist,
+    color=control_colors["alpha_cmd"],
     linewidth=2,
-    label="d(Pc)/dt",
+    label="alpha_cmd",
 )
-axs_control[2].plot(
-    timespan,
-    u_sum_hist,
-    color=control_colors["u_sum"],
-    linewidth=1.75,
-    label="u_sum",
-)
-axs_control[2].set_ylabel("Pc Loop State")
-axs_control[2].set_title("Pressure PID Internal States")
+axs_control[2].set_ylabel("Alpha")
+axs_control[2].set_xlabel("Time (s)")
+axs_control[2].set_title("Alpha Command States")
 axs_control[2].grid(alpha=0.3)
 axs_control[2].legend()
-
-axs_control[3].plot(
-    timespan,
-    mr_error_hist,
-    color=control_colors["mr_error"],
-    linewidth=2,
-    label="MR error",
-)
-axs_control[3].plot(
-    timespan,
-    mr_integral_hist,
-    color=control_colors["mr_integral"],
-    linewidth=2,
-    label="MR integral",
-)
-axs_control[3].plot(
-    timespan,
-    mr_dmeas_hist,
-    color=control_colors["mr_dmeas"],
-    linestyle="--",
-    linewidth=2,
-    label="d(MR)/dt",
-)
-axs_control[3].plot(
-    timespan,
-    u_diff_hist,
-    color=control_colors["u_diff"],
-    linewidth=1.75,
-    label="u_diff",
-)
-axs_control[3].set_ylabel("MR Loop State")
-axs_control[3].set_xlabel("Time (s)")
-axs_control[3].set_title("Mixture Ratio PID Internal States")
-axs_control[3].grid(alpha=0.3)
-axs_control[3].legend()
 
 fig_control.tight_layout()
 
@@ -637,7 +545,7 @@ axs_throttle[0].plot(
     color=control_colors["fuel_actual"],
     linestyle="--",
     linewidth=1.75,
-    label="Fuel unsat command",
+    label="Fuel commanded trim",
 )
 axs_throttle[0].set_ylabel("Fuel CdA (cm$^2$)")
 axs_throttle[0].set_title("Fuel Throttle Command")
@@ -657,7 +565,7 @@ axs_throttle[1].plot(
     color=control_colors["ox_unsat"],
     linestyle="--",
     linewidth=1.75,
-    label="Ox unsat command",
+    label="Ox commanded trim",
 )
 axs_throttle[1].set_ylabel("Ox CdA (cm$^2$)")
 axs_throttle[1].set_xlabel("Time (s)")
@@ -754,14 +662,6 @@ axs_chamber[1].plot(
     linewidth=2,
     label="Measured MR",
 )
-axs_chamber[1].plot(
-    timespan,
-    MR_target_schedule,
-    color=control_colors["mr_target"],
-    linestyle="--",
-    linewidth=2,
-    label="Target MR",
-)
 axs_chamber[1].set_ylabel("Mixture Ratio")
 axs_chamber[1].set_title("Mixture Ratio")
 axs_chamber[1].grid(alpha=0.3)
@@ -781,3 +681,7 @@ axs_chamber[3].grid(alpha=0.3)
 fig_chamber.tight_layout()
 
 plt.show()
+
+
+
+

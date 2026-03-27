@@ -1,0 +1,89 @@
+
+import copy
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+
+from Utilities import set_winplot_dark
+from Physics import PA_PER_PSI, M2_PER_IN2, LBF_PER_N
+from Network.Components import *
+from Network import TestStand, Balance
+from Controller import TestActuator, PID, apply_error_deadband, ramp, low_pass_filter, step
+
+filename = "alpha_map.parquet"
+
+FuelTank = Tank("Fuel Tank", "jet-a", 450 * PA_PER_PSI, 70 / 1000, temperature=300)
+OxTank = Tank("Oxidizer Tank", "LOX", 400 * PA_PER_PSI, 70 / 1000, temperature=90)
+
+FuelInjectorManifold = InjectorManifold(
+    "Fuel Manifold",
+    350 * PA_PER_PSI,
+    temperature=500,
+    volume=0.1287,
+)
+OxInjectorManifold = InjectorManifold(
+    "Oxidizer Manifold",
+    350 * PA_PER_PSI,
+    temperature=90,
+    volume=0.1287,
+)
+
+Chamber = CombustionChamber(
+    "Main Chamber",
+    300 * PA_PER_PSI,
+    mixture_ratio=2.0,
+    cstar_efficiency=1,
+    volume=6e-2,
+)
+
+Atmosphere = Drain("Ambient")
+
+FuelThrottle = Valve("Fuel Throttle Valve", CdA=0.5e-4)
+OxThrottle = Valve("Oxidizer Throttle Valve", CdA=1.0e-4)
+
+FuelRunline = Line("Fuel Runline", length=5, cross_sectional_area=0.5e-4)
+OxRunline = Line("Oxidizer Runline", length=5, cross_sectional_area=0.5e-4)
+
+FuelInjector = Orifice("Fuel Injector", 0.5e-4)
+OxInjector = Orifice("OxInjector", 1.0e-4)
+
+TCA = Nozzle(
+    "Nozzle",
+    throat_area=6.05 * M2_PER_IN2,
+    contraction_ratio=2,
+    expansion_ratio=4.7,
+    eta_cf=0.95,
+    nfz=2,
+)
+
+HETS = TestStand(
+    "HETS",
+    FuelTank, OxTank,
+    FuelRunline, OxRunline,
+    FuelThrottle, OxThrottle,
+    FuelInjectorManifold, OxInjectorManifold,
+    FuelInjector, OxInjector,
+    Chamber, TCA, Atmosphere
+)
+
+
+# Build Steady-State Initial Condition
+ts = copy.deepcopy(HETS)
+
+
+pcmr_map = ts.generate_PcMR_map(
+    MR_target=2.0,
+    Pc_min=250 * PA_PER_PSI,
+    Pc_max=310 * PA_PER_PSI,
+    Pc_step=1 * PA_PER_PSI,
+    fuel_CdA_range=(1.0e-6, 1.5e-4),
+    ox_CdA_range=(1.0e-6, 1.5e-4),
+    return_dataframe = True,
+    save_parquet = True,
+    parquet_filename = filename,
+    verbose=False,
+)
+
+
+df = pd.read_parquet(filename)
+print(df.head())

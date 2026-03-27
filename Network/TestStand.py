@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import copy
 import numpy as np
-from scipy.optimize import root
+from scipy.optimize import root, least_squares
+import pandas as pd
 
 from .Components import *
 from Utilities import choked_nozzle_thrust, choked_nozzle_mass_flow, get_chamber_pressure
@@ -1294,3 +1295,378 @@ class TestStand:
             self.OxThrottleValve.CdA = original_ox_CdA
 
         return result
+    
+
+
+
+    def generate_PcMR_map(
+        self,
+        MR_target: float,
+        Pc_min: float,
+        Pc_max: float,
+        Pc_step: float,
+        fuel_CdA_range: tuple[float, float],
+        ox_CdA_range: tuple[float, float],
+        x0_cdas: tuple[float, float] | None = None,
+        x0_state: list[float] | None = None,
+        pc_scale: float = 5.0 * PA_PER_PSI,
+        mr_scale: float = 0.01,
+        residual_tol: float = 1e-6,
+        lsq_xtol: float = 1e-10,
+        lsq_ftol: float = 1e-10,
+        lsq_gtol: float = 1e-10,
+        max_nfev: int = 200,
+        return_dataframe: bool = True,
+        save_parquet: bool = False,
+        parquet_filename: str = "pcmr_map.parquet",
+        verbose: bool = False
+    ) -> dict[str, np.ndarray] | "pd.DataFrame":
+        """
+        Generate a steady-state lookup table of throttle CdA values that achieve a
+        desired chamber pressure Pc and mixture ratio MR.
+
+        This routine solves, at each requested Pc target, for the two unknowns:
+
+            - FuelThrottleValve.CdA
+            - OxThrottleValve.CdA
+
+        such that the solved steady-state TestStand satisfies:
+
+            MainChamber.p  = Pc_target
+            MainChamber.MR = MR_target
+
+        The resulting map is intended for controller use, where only chamber pressure
+        is measured and the desired mixture ratio is enforced by scheduling both
+        throttle valves along a precomputed constant-MR operating line.
+
+        Parameters
+        ----------
+        MR_target : float
+            Desired steady-state mixture ratio to hold throughout the map.
+        Pc_min : float
+            Minimum chamber pressure in the map [Pa].
+        Pc_max : float
+            Maximum chamber pressure in the map [Pa].
+        Pc_step : float
+            Chamber pressure step size [Pa]. The generated Pc targets include both
+            ends when possible.
+        fuel_CdA_range : tuple[float, float]
+            Allowed fuel throttle CdA bounds as (min, max) [m^2].
+        ox_CdA_range : tuple[float, float]
+            Allowed oxidizer throttle CdA bounds as (min, max) [m^2].
+        x0_cdas : tuple[float, float] or None, optional
+            Initial guess for (fuel throttle CdA, oxidizer throttle CdA) [m^2].
+            If None, uses the current TestStand throttle CdA values.
+        x0_state : list[float] or None, optional
+            Optional initial guess passed into steady_state() for the inner
+            manifold/chamber pressure solve. If None, uses self.get_x0().
+            After each successful point, the next solve is warm-started from the
+            previous solved state.
+        pc_scale : float, optional
+            Pressure residual scaling [Pa] used inside the least-squares solve.
+            Choose a value representative of an acceptable Pc error magnitude.
+        mr_scale : float, optional
+            Mixture-ratio residual scaling used inside the least-squares solve.
+            Choose a value representative of an acceptable MR error magnitude.
+        residual_tol : float, optional
+            Maximum allowed absolute scaled residual norm for accepting a map point.
+            A point is rejected if norm([r_pc_scaled, r_mr_scaled]) > residual_tol.
+        lsq_xtol, lsq_ftol, lsq_gtol : float, optional
+            SciPy least_squares tolerances.
+        max_nfev : int, optional
+            Maximum function evaluations for the CdA solve at each map point.
+        verbose : bool, optional
+            If True, prints per-point solve progress.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            Lookup-table dictionary with controller-friendly arrays:
+
+            {
+                "MR_target": scalar array of shape (N,),
+                "Pc_target": target chamber pressures [Pa],
+                "Pc_target_psia": target chamber pressures [psia],
+                "Pc_achieved": solved chamber pressures [Pa],
+                "Pc_achieved_psia": solved chamber pressures [psia],
+                "MR_achieved": solved mixture ratios [-],
+                "fuel_CdA": fuel throttle CdA trims [m^2],
+                "fuel_CdA_cm2": fuel throttle CdA trims [cm^2],
+                "ox_CdA": oxidizer throttle CdA trims [m^2],
+                "ox_CdA_cm2": oxidizer throttle CdA trims [cm^2],
+                "fuel_mdot": solved fuel mass flow [kg/s],
+                "ox_mdot": solved oxidizer mass flow [kg/s],
+                "success": boolean success flags
+            }
+
+            All arrays are ordered by increasing Pc_target and can be directly used
+            with np.interp(...) in the controller.
+
+        Raises
+        ------
+        ValueError
+            If inputs are invalid, bounds are malformed, or no valid Pc grid can be made.
+        RuntimeError
+            If no map points can be solved successfully.
+
+        Notes
+        -----
+        - Uses scipy.optimize.least_squares with bounds, which is more robust than
+        an unconstrained root solve for physical CdA variables.
+        - Uses continuation / warm-starting:
+            * the previous successful CdA pair seeds the next CdA solve
+            * the previous successful steady-state x0 seeds the next steady_state() solve
+        - The original TestStand object is not mutated.
+        - The returned map is intended to serve as a nominal constant-MR throttle line.
+        A pressure controller can then interpolate these trims and apply a small
+        common-mode correction around them.
+        """
+
+        MR_target = float(MR_target)
+        Pc_min = float(Pc_min)
+        Pc_max = float(Pc_max)
+        Pc_step = float(Pc_step)
+        pc_scale = float(pc_scale)
+        mr_scale = float(mr_scale)
+        residual_tol = float(residual_tol)
+
+        fuel_CdA_min, fuel_CdA_max = map(float, fuel_CdA_range)
+        ox_CdA_min, ox_CdA_max = map(float, ox_CdA_range)
+
+        if MR_target <= 0.0:
+            raise ValueError(f"MR_target must be > 0. Got {MR_target}.")
+        if Pc_min <= 0.0 or Pc_max <= 0.0:
+            raise ValueError(f"Pc_min and Pc_max must be > 0. Got {Pc_min}, {Pc_max}.")
+        if Pc_max < Pc_min:
+            raise ValueError(f"Pc_max must be >= Pc_min. Got Pc_min={Pc_min}, Pc_max={Pc_max}.")
+        if Pc_step <= 0.0:
+            raise ValueError(f"Pc_step must be > 0. Got {Pc_step}.")
+        if pc_scale <= 0.0:
+            raise ValueError(f"pc_scale must be > 0. Got {pc_scale}.")
+        if mr_scale <= 0.0:
+            raise ValueError(f"mr_scale must be > 0. Got {mr_scale}.")
+        if fuel_CdA_min <= 0.0 or fuel_CdA_max <= 0.0 or fuel_CdA_max <= fuel_CdA_min:
+            raise ValueError(
+                "fuel_CdA_range must be (min, max) with 0 < min < max. "
+                f"Got {fuel_CdA_range}."
+            )
+        if ox_CdA_min <= 0.0 or ox_CdA_max <= 0.0 or ox_CdA_max <= ox_CdA_min:
+            raise ValueError(
+                "ox_CdA_range must be (min, max) with 0 < min < max. "
+                f"Got {ox_CdA_range}."
+            )
+
+        # Build inclusive Pc target grid.
+        n_steps = int(np.floor((Pc_max - Pc_min) / Pc_step + 1e-12))
+        Pc_targets = Pc_min + np.arange(n_steps + 1, dtype=float) * Pc_step
+        if Pc_targets.size == 0:
+            raise ValueError("No Pc targets generated. Check Pc_min, Pc_max, and Pc_step.")
+        if Pc_targets[-1] < Pc_max - 1e-12:
+            Pc_targets = np.append(Pc_targets, Pc_max)
+
+        base = copy.deepcopy(self)
+
+        if x0_cdas is None:
+            x_cda_guess = np.array(
+                [
+                    float(base.FuelThrottleValve.CdA),
+                    float(base.OxThrottleValve.CdA),
+                ],
+                dtype=float,
+            )
+        else:
+            x_cda_guess = np.array([float(x0_cdas[0]), float(x0_cdas[1])], dtype=float)
+
+        if not (fuel_CdA_min <= x_cda_guess[0] <= fuel_CdA_max):
+            raise ValueError(
+                f"Initial fuel CdA guess {x_cda_guess[0]:.6e} is outside bounds "
+                f"[{fuel_CdA_min:.6e}, {fuel_CdA_max:.6e}]."
+            )
+        if not (ox_CdA_min <= x_cda_guess[1] <= ox_CdA_max):
+            raise ValueError(
+                f"Initial ox CdA guess {x_cda_guess[1]:.6e} is outside bounds "
+                f"[{ox_CdA_min:.6e}, {ox_CdA_max:.6e}]."
+            )
+
+        last_state_x0 = copy.deepcopy(x0_state) if x0_state is not None else base.get_x0()
+
+        rows: list[dict[str, float | bool]] = []
+
+        bounds_lo = np.array([fuel_CdA_min, ox_CdA_min], dtype=float)
+        bounds_hi = np.array([fuel_CdA_max, ox_CdA_max], dtype=float)
+
+        for Pc_target in Pc_targets:
+            Pc_target = float(Pc_target)
+
+            def residuals(x: np.ndarray) -> np.ndarray:
+                fuel_cda = float(x[0])
+                ox_cda = float(x[1])
+
+                ts_try = copy.deepcopy(base)
+                ts_try.FuelThrottleValve.CdA = fuel_cda
+                ts_try.OxThrottleValve.CdA = ox_cda
+
+                try:
+                    solved = ts_try.steady_state(x0=last_state_x0)
+                except Exception:
+                    return np.array([1.0e6, 1.0e6], dtype=float)
+
+                r_pc = (float(solved.MainChamber.p) - Pc_target) / pc_scale
+                r_mr = (float(solved.MainChamber.MR) - MR_target) / mr_scale
+                return np.array([r_pc, r_mr], dtype=float)
+
+            lsq = least_squares(
+                residuals,
+                x0=x_cda_guess,
+                bounds=(bounds_lo, bounds_hi),
+                xtol=lsq_xtol,
+                ftol=lsq_ftol,
+                gtol=lsq_gtol,
+                max_nfev=max_nfev,
+            )
+
+            point_success = False
+            fuel_cda_sol = float(lsq.x[0])
+            ox_cda_sol = float(lsq.x[1])
+
+            Pc_achieved = np.nan
+            MR_achieved = np.nan
+            fuel_mdot = np.nan
+            ox_mdot = np.nan
+
+            try:
+                ts_sol = copy.deepcopy(base)
+                ts_sol.FuelThrottleValve.CdA = fuel_cda_sol
+                ts_sol.OxThrottleValve.CdA = ox_cda_sol
+                ts_sol = ts_sol.steady_state(x0=last_state_x0)
+
+                r_pc_final = (float(ts_sol.MainChamber.p) - Pc_target) / pc_scale
+                r_mr_final = (float(ts_sol.MainChamber.MR) - MR_target) / mr_scale
+                residual_norm = float(np.linalg.norm([r_pc_final, r_mr_final]))
+
+                if lsq.success and np.isfinite(residual_norm) and residual_norm <= residual_tol:
+                    point_success = True
+                    Pc_achieved = float(ts_sol.MainChamber.p)
+                    MR_achieved = float(ts_sol.MainChamber.MR)
+                    fuel_mdot = float(ts_sol.FuelInjector.mdot)
+                    ox_mdot = float(ts_sol.OxInjector.mdot)
+
+                    # Continuation / warm start for next point.
+                    x_cda_guess = np.array([fuel_cda_sol, ox_cda_sol], dtype=float)
+                    last_state_x0 = ts_sol.solved_x0()
+
+                    if verbose:
+                        print(
+                            "[generate_PcMR_map] OK  "
+                            f"Pc_target={Pc_target / PA_PER_PSI:8.3f} psia, "
+                            f"Pc={Pc_achieved / PA_PER_PSI:8.3f} psia, "
+                            f"MR={MR_achieved:7.5f}, "
+                            f"fuel_CdA={fuel_cda_sol * 1e4:8.5f} cm^2, "
+                            f"ox_CdA={ox_cda_sol * 1e4:8.5f} cm^2"
+                        )
+                else:
+                    if verbose:
+                        print(
+                            "[generate_PcMR_map] FAIL "
+                            f"Pc_target={Pc_target / PA_PER_PSI:8.3f} psia, "
+                            f"lsq.success={lsq.success}, "
+                            f"residual_norm={residual_norm:.3e}"
+                        )
+
+            except Exception as e:
+                if verbose:
+                    print(
+                        "[generate_PcMR_map] FAIL "
+                        f"Pc_target={Pc_target / PA_PER_PSI:8.3f} psia, "
+                        f"exception={e}"
+                    )
+
+            rows.append(
+                {
+                    "MR_target": MR_target,
+                    "Pc_target": Pc_target,
+                    "Pc_achieved": Pc_achieved,
+                    "MR_achieved": MR_achieved,
+                    "fuel_CdA": fuel_cda_sol,
+                    "ox_CdA": ox_cda_sol,
+                    "fuel_mdot": fuel_mdot,
+                    "ox_mdot": ox_mdot,
+                    "success": point_success,
+                }
+            )
+
+        success_rows = [row for row in rows if bool(row["success"])]
+        if len(success_rows) == 0:
+            raise RuntimeError(
+                "generate_PcMR_map() could not solve any valid map points. "
+                "Try a better initial CdA guess, a narrower Pc range, or looser bounds."
+            )
+
+        # Only keep successful points in the final lookup table.
+        Pc_target_arr = np.array([float(r["Pc_target"]) for r in success_rows], dtype=float)
+        Pc_achieved_arr = np.array([float(r["Pc_achieved"]) for r in success_rows], dtype=float)
+        MR_target_arr = np.array([float(r["MR_target"]) for r in success_rows], dtype=float)
+        MR_achieved_arr = np.array([float(r["MR_achieved"]) for r in success_rows], dtype=float)
+        fuel_CdA_arr = np.array([float(r["fuel_CdA"]) for r in success_rows], dtype=float)
+        ox_CdA_arr = np.array([float(r["ox_CdA"]) for r in success_rows], dtype=float)
+        fuel_mdot_arr = np.array([float(r["fuel_mdot"]) for r in success_rows], dtype=float)
+        ox_mdot_arr = np.array([float(r["ox_mdot"]) for r in success_rows], dtype=float)
+        success_arr = np.array([bool(r["success"]) for r in success_rows], dtype=bool)
+
+        df = pd.DataFrame({
+            "Pc_target": Pc_target_arr,
+            "Pc": Pc_achieved_arr,
+            "MR": MR_achieved_arr,
+            "fuel_CdA": fuel_CdA_arr,
+            "ox_CdA": ox_CdA_arr,
+            "mdot_f": fuel_mdot_arr,
+            "mdot_ox": ox_mdot_arr,
+            "success": success_arr,
+        })
+
+        # --------------------------------------------
+        # Compute alpha from total mass flow
+        # --------------------------------------------
+        df["mdot_total"] = df["mdot_f"] + df["mdot_ox"]
+
+        mdot_min = df["mdot_total"].min()
+        mdot_max = df["mdot_total"].max()
+
+        if mdot_max <= mdot_min:
+            raise RuntimeError("Invalid mdot range for alpha computation.")
+
+        df["alpha"] = (df["mdot_total"] - mdot_min) / (mdot_max - mdot_min)
+
+        # --------------------------------------------
+        # Sort by alpha (this defines your manifold)
+        # --------------------------------------------
+        cols = ["alpha"] + [c for c in df.columns if c != "alpha"]
+        df = df[cols]
+        df = df.sort_values("alpha").reset_index(drop=True)
+
+
+        # Optional: Save to parquet with auto-increment
+        if save_parquet:
+            import os
+
+            base_name, ext = os.path.splitext(parquet_filename)
+            if ext == "":
+                ext = ".parquet"
+
+            final_name = base_name + ext
+            counter = 1
+
+            while os.path.exists(final_name):
+                final_name = f"{base_name}_{counter}{ext}"
+                counter += 1
+
+            df.to_parquet(final_name, index=False)
+
+            if verbose:
+                print(f"[generate_PcMR_map] Saved parquet: {final_name}")
+
+
+        if return_dataframe:
+            return df
+        else:
+            return df.to_dict(orient="list")
