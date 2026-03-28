@@ -180,8 +180,8 @@ ox_actuator = TestActuator(
 
 extreme = copy.deepcopy(HETS)
 result = extreme.check_max_throttlable_condition(
-    fuel_CdA_range=(fuel_cmd_min, fuel_cmd_max),
-    ox_CdA_range=(ox_cmd_min, ox_cmd_max),
+    max_fuel_CdA=fuel_cmd_max,
+    max_ox_CdA=ox_cmd_max,
 )
 
 print("\n========== MAX THROTTLE CONDITION ==========\n")
@@ -470,7 +470,7 @@ def add_ox_throttle_overlay(ax):
 # -------------------------
 # Figure 1: Control loop
 # -------------------------
-fig_control, axs_control = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+fig_control, axs_control = plt.subplots(3, 1, figsize=(10,10), sharex=True)
 
 axs_control[0].plot(
     timespan,
@@ -545,7 +545,7 @@ axs_control[2].set_title("Alpha Command States")
 axs_control[2].grid(alpha=0.3)
 axs_control[2].legend()
 
-fig_control.tight_layout()
+#fig_control.tight_layout()
 
 
 # -------------------------
@@ -629,7 +629,7 @@ fig_fuel.tight_layout()
 # -------------------------
 fig_ox, axs_ox = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
 
-axs_ox[0].plot(timespan, ox_sys_mdot, color=ox_colors["sys_mdot"], linewidth=2)
+axs_ox[0].plot(timespan, ox_sys_mdot, color=chamber_colors["mr"], linewidth=2)
 axs_ox[0].set_ylabel("Ox System mdot (kg/s)")
 axs_ox[0].set_title("Oxidizer System Mass Flow")
 axs_ox[0].grid(alpha=0.3)
@@ -679,7 +679,7 @@ axs_chamber[0].legend()
 axs_chamber[1].plot(
     timespan,
     mixture_ratio,
-    color=chamber_colors["mr"],
+    color=control_colors["ox_actual"],
     linewidth=2,
     label="Measured MR",
 )

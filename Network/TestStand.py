@@ -1240,7 +1240,7 @@ class TestStand:
         return next_state
     
 
-    def check_max_throttlable_condition(self, fuel_CdA_range, ox_CdA_range):
+    def check_max_throttlable_condition(self, max_fuel_CdA, max_ox_CdA):
         """
         Evaluate steady-state chamber conditions at the maximum fuel and oxidizer
         throttle CdA values.
@@ -1251,12 +1251,10 @@ class TestStand:
 
         Parameters
         ----------
-        fuel_CdA_range : tuple[float, float]
-            Minimum and maximum allowable fuel throttle CdA as
-            (fuel_CdA_min, fuel_CdA_max).
-        ox_CdA_range : tuple[float, float]
-            Minimum and maximum allowable oxidizer throttle CdA as
-            (ox_CdA_min, ox_CdA_max).
+        max_fuel_CdA : float
+            Maximum allowable fuel throttle CdA.
+        max_ox_CdA : float
+            Maximum allowable oxidizer throttle CdA.
 
         Returns
         -------
@@ -1271,21 +1269,19 @@ class TestStand:
         -----
         The original throttle CdA values are restored before returning.
         """
-        _, fuel_CdA_max = fuel_CdA_range
-        _, ox_CdA_max = ox_CdA_range
 
         original_fuel_CdA = self.FuelThrottleValve.CdA
         original_ox_CdA = self.OxThrottleValve.CdA
 
         try:
-            self.FuelThrottleValve.CdA = fuel_CdA_max
-            self.OxThrottleValve.CdA = ox_CdA_max
+            self.FuelThrottleValve.CdA = max_fuel_CdA
+            self.OxThrottleValve.CdA = max_ox_CdA
 
             ss = self.steady_state()
 
             result = {
-                "fuel_CdA": fuel_CdA_max,
-                "ox_CdA": ox_CdA_max,
+                "fuel_CdA": max_fuel_CdA,
+                "ox_CdA": max_ox_CdA,
                 "Pc": ss.MainChamber.p,
                 "MR": ss.MainChamber.MR,
             }
@@ -1299,7 +1295,7 @@ class TestStand:
 
 
 
-    def generate_PcMR_map(
+    def generate_alpha_map(
         self,
         MR_target: float,
         Pc_min: float,
@@ -1665,6 +1661,398 @@ class TestStand:
             if verbose:
                 print(f"[generate_PcMR_map] Saved parquet: {final_name}")
 
+
+        if return_dataframe:
+            return df
+        else:
+            return df.to_dict(orient="list")
+        
+
+
+    def generate_ox_cda_map(
+        self,
+        fuel_CdA: float,
+        ox_CdA_range: tuple[float, float],
+        ox_CdA_step: float,
+        x0_state: list[float] | None = None,
+        return_dataframe: bool = True,
+        save_parquet: bool = False,
+        parquet_filename: str = "ox_cda_map.parquet",
+        verbose: bool = False,
+    ) -> dict[str, np.ndarray] | "pd.DataFrame":
+        """
+        Generate a steady-state lookup table of oxidizer throttle CdA vs chamber pressure
+        for a fixed fuel throttle CdA.
+
+        This routine:
+            - holds FuelThrottleValve.CdA constant
+            - sweeps OxThrottleValve.CdA over a specified range
+            - solves steady_state() at each ox CdA
+            - records the resulting chamber pressure Pc and mixture ratio MR
+
+        All exported values are in SI units:
+            - CdA in m^2
+            - Pc in Pa
+            - mdot in kg/s
+
+        Parameters
+        ----------
+        fuel_CdA : float
+            Fixed fuel throttle CdA [m^2].
+        ox_CdA_range : tuple[float, float]
+            Sweep bounds for oxidizer throttle CdA as (min, max) [m^2].
+        ox_CdA_step : float
+            Step size for oxidizer throttle CdA sweep [m^2].
+        x0_state : list[float] or None, optional
+            Optional initial guess passed into steady_state(). After each successful
+            point, the next solve is warm-started using solved_x0().
+        return_dataframe : bool, optional
+            If True, return a pandas DataFrame. Otherwise return a dict of lists.
+        save_parquet : bool, optional
+            If True, save the resulting DataFrame to parquet.
+        parquet_filename : str, optional
+            Base parquet filename.
+        verbose : bool, optional
+            If True, print per-point progress.
+
+        Returns
+        -------
+        pandas.DataFrame or dict[str, np.ndarray]
+            Columns:
+                - fuel_CdA   [m^2]
+                - ox_CdA     [m^2]
+                - Pc         [Pa]
+                - MR         [-]
+                - mdot_f     [kg/s]
+                - mdot_ox    [kg/s]
+                - mdot_total [kg/s]
+                - success    [bool]
+
+        Raises
+        ------
+        ValueError
+            If inputs are invalid.
+        RuntimeError
+            If no valid points are solved.
+        """
+
+        fuel_CdA = float(fuel_CdA)
+        ox_CdA_min, ox_CdA_max = map(float, ox_CdA_range)
+        ox_CdA_step = float(ox_CdA_step)
+
+        if fuel_CdA <= 0.0:
+            raise ValueError(f"fuel_CdA must be > 0. Got {fuel_CdA}.")
+        if ox_CdA_min <= 0.0 or ox_CdA_max <= 0.0 or ox_CdA_max <= ox_CdA_min:
+            raise ValueError(
+                "ox_CdA_range must be (min, max) with 0 < min < max. "
+                f"Got {ox_CdA_range}."
+            )
+        if ox_CdA_step <= 0.0:
+            raise ValueError(f"ox_CdA_step must be > 0. Got {ox_CdA_step}.")
+
+        # Inclusive ox CdA grid
+        n_steps = int(np.floor((ox_CdA_max - ox_CdA_min) / ox_CdA_step + 1e-12))
+        ox_CdA_targets = ox_CdA_min + np.arange(n_steps + 1, dtype=float) * ox_CdA_step
+        if ox_CdA_targets.size == 0:
+            raise ValueError("No ox_CdA targets generated. Check ox_CdA_range and ox_CdA_step.")
+        if ox_CdA_targets[-1] < ox_CdA_max - 1e-12:
+            ox_CdA_targets = np.append(ox_CdA_targets, ox_CdA_max)
+
+        base = copy.deepcopy(self)
+        base.FuelThrottleValve.CdA = fuel_CdA
+
+        last_state_x0 = copy.deepcopy(x0_state) if x0_state is not None else base.get_x0()
+
+        rows: list[dict[str, float | bool]] = []
+
+        for ox_cda in ox_CdA_targets:
+            ox_cda = float(ox_cda)
+
+            point_success = False
+            Pc_achieved = np.nan
+            MR_achieved = np.nan
+            fuel_mdot = np.nan
+            ox_mdot = np.nan
+
+            try:
+                ts_sol = copy.deepcopy(base)
+                ts_sol.OxThrottleValve.CdA = ox_cda
+                ts_sol = ts_sol.steady_state(x0=last_state_x0)
+
+                Pc_achieved = float(ts_sol.MainChamber.p)
+                MR_achieved = float(ts_sol.MainChamber.MR)
+                fuel_mdot = float(ts_sol.FuelInjector.mdot)
+                ox_mdot = float(ts_sol.OxInjector.mdot)
+
+                point_success = True
+
+                # Warm start next solve
+                last_state_x0 = ts_sol.solved_x0()
+
+            except Exception:
+                point_success = False
+
+            if verbose:
+                print(
+                    "[generate_ox_cda_map] "
+                    f"ox_CdA={ox_cda:.6e} m^2, "
+                    f"Pc={Pc_achieved:.6e} Pa, "
+                    f"MR={MR_achieved:.6f}, "
+                    f"success={point_success}"
+                )
+
+            rows.append(
+                {
+                    "fuel_CdA": fuel_CdA,                          # m^2
+                    "ox_CdA": ox_cda,                              # m^2
+                    "Pc": Pc_achieved,                             # Pa
+                    "MR": MR_achieved,                             # -
+                    "mdot_f": fuel_mdot,                           # kg/s
+                    "mdot_ox": ox_mdot,                            # kg/s
+                    "mdot_total": (
+                        fuel_mdot + ox_mdot
+                        if np.isfinite(fuel_mdot) and np.isfinite(ox_mdot)
+                        else np.nan
+                    ),
+                    "success": point_success,
+                }
+            )
+
+        success_rows = [row for row in rows if bool(row["success"])]
+        if len(success_rows) == 0:
+            raise RuntimeError(
+                "generate_ox_cda_map() could not produce any valid solved points."
+            )
+
+        df = pd.DataFrame({
+            "fuel_CdA": np.array([float(r["fuel_CdA"]) for r in success_rows], dtype=float),
+            "ox_CdA": np.array([float(r["ox_CdA"]) for r in success_rows], dtype=float),
+            "Pc": np.array([float(r["Pc"]) for r in success_rows], dtype=float),
+            "MR": np.array([float(r["MR"]) for r in success_rows], dtype=float),
+            "mdot_f": np.array([float(r["mdot_f"]) for r in success_rows], dtype=float),
+            "mdot_ox": np.array([float(r["mdot_ox"]) for r in success_rows], dtype=float),
+            "mdot_total": np.array([float(r["mdot_total"]) for r in success_rows], dtype=float),
+            "success": np.array([bool(r["success"]) for r in success_rows], dtype=bool),
+        })
+
+        # Sort by increasing chamber pressure for lookup use
+        df = df.sort_values(by="Pc", ascending=True, kind="mergesort").reset_index(drop=True)
+
+        if save_parquet:
+            import os
+
+            base_name, ext = os.path.splitext(parquet_filename)
+            if ext == "":
+                ext = ".parquet"
+
+            final_name = base_name + ext
+            counter = 1
+
+            while os.path.exists(final_name):
+                final_name = f"{base_name}_{counter}{ext}"
+                counter += 1
+
+            # Saved dataframe is SI-only
+            df.to_parquet(final_name, index=False)
+
+            if verbose:
+                print(f"[generate_ox_cda_map] Saved parquet: {final_name}")
+
+        if return_dataframe:
+            return df
+        else:
+            return df.to_dict(orient="list")
+        
+
+
+    def generate_fuel_cda_map(
+        self,
+        ox_CdA: float,
+        fuel_CdA_range: tuple[float, float],
+        fuel_CdA_step: float,
+        x0_state: list[float] | None = None,
+        return_dataframe: bool = True,
+        save_parquet: bool = False,
+        parquet_filename: str = "fuel_cda_map.parquet",
+        verbose: bool = False,
+    ) -> dict[str, np.ndarray] | "pd.DataFrame":
+        """
+        Generate a steady-state lookup table of fuel throttle CdA vs chamber pressure
+        for a fixed oxidizer throttle CdA.
+
+        This routine:
+            - holds OxThrottleValve.CdA constant
+            - sweeps FuelThrottleValve.CdA over a specified range
+            - solves steady_state() at each fuel CdA
+            - records the resulting chamber pressure Pc and mixture ratio MR
+
+        All exported values are in SI units:
+            - CdA in m^2
+            - Pc in Pa
+            - mdot in kg/s
+
+        Parameters
+        ----------
+        ox_CdA : float
+            Fixed oxidizer throttle CdA [m^2].
+        fuel_CdA_range : tuple[float, float]
+            Sweep bounds for fuel throttle CdA as (min, max) [m^2].
+        fuel_CdA_step : float
+            Step size for fuel throttle CdA sweep [m^2].
+        x0_state : list[float] or None, optional
+            Optional initial guess passed into steady_state(). After each successful
+            point, the next solve is warm-started using solved_x0().
+        return_dataframe : bool, optional
+            If True, return a pandas DataFrame. Otherwise return a dict of lists.
+        save_parquet : bool, optional
+            If True, save the resulting DataFrame to parquet.
+        parquet_filename : str, optional
+            Base parquet filename.
+        verbose : bool, optional
+            If True, print per-point progress.
+
+        Returns
+        -------
+        pandas.DataFrame or dict[str, np.ndarray]
+            Columns:
+                - ox_CdA      [m^2]
+                - fuel_CdA    [m^2]
+                - Pc          [Pa]
+                - MR          [-]
+                - mdot_f      [kg/s]
+                - mdot_ox     [kg/s]
+                - mdot_total  [kg/s]
+                - success     [bool]
+
+        Raises
+        ------
+        ValueError
+            If inputs are invalid.
+        RuntimeError
+            If no valid points are solved.
+        """
+
+        ox_CdA = float(ox_CdA)
+        fuel_CdA_min, fuel_CdA_max = map(float, fuel_CdA_range)
+        fuel_CdA_step = float(fuel_CdA_step)
+
+        if ox_CdA <= 0.0:
+            raise ValueError(f"ox_CdA must be > 0. Got {ox_CdA}.")
+        if fuel_CdA_min <= 0.0 or fuel_CdA_max <= 0.0 or fuel_CdA_max <= fuel_CdA_min:
+            raise ValueError(
+                "fuel_CdA_range must be (min, max) with 0 < min < max. "
+                f"Got {fuel_CdA_range}."
+            )
+        if fuel_CdA_step <= 0.0:
+            raise ValueError(f"fuel_CdA_step must be > 0. Got {fuel_CdA_step}.")
+
+        # Inclusive fuel CdA grid
+        n_steps = int(np.floor((fuel_CdA_max - fuel_CdA_min) / fuel_CdA_step + 1e-12))
+        fuel_CdA_targets = fuel_CdA_min + np.arange(n_steps + 1, dtype=float) * fuel_CdA_step
+        if fuel_CdA_targets.size == 0:
+            raise ValueError("No fuel_CdA targets generated. Check fuel_CdA_range and fuel_CdA_step.")
+        if fuel_CdA_targets[-1] < fuel_CdA_max - 1e-12:
+            fuel_CdA_targets = np.append(fuel_CdA_targets, fuel_CdA_max)
+
+        base = copy.deepcopy(self)
+        base.OxThrottleValve.CdA = ox_CdA
+
+        last_state_x0 = copy.deepcopy(x0_state) if x0_state is not None else base.get_x0()
+
+        rows: list[dict[str, float | bool]] = []
+
+        for fuel_cda in fuel_CdA_targets:
+            fuel_cda = float(fuel_cda)
+
+            point_success = False
+            Pc_achieved = np.nan
+            MR_achieved = np.nan
+            fuel_mdot = np.nan
+            ox_mdot = np.nan
+
+            try:
+                ts_sol = copy.deepcopy(base)
+                ts_sol.FuelThrottleValve.CdA = fuel_cda
+                ts_sol = ts_sol.steady_state(x0=last_state_x0)
+
+                Pc_achieved = float(ts_sol.MainChamber.p)
+                MR_achieved = float(ts_sol.MainChamber.MR)
+                fuel_mdot = float(ts_sol.FuelInjector.mdot)
+                ox_mdot = float(ts_sol.OxInjector.mdot)
+
+                point_success = True
+
+                # Warm start next solve
+                last_state_x0 = ts_sol.solved_x0()
+
+            except Exception:
+                point_success = False
+
+            if verbose:
+                print(
+                    "[generate_fuel_cda_map] "
+                    f"fuel_CdA={fuel_cda:.6e} m^2, "
+                    f"Pc={Pc_achieved:.6e} Pa, "
+                    f"MR={MR_achieved:.6f}, "
+                    f"success={point_success}"
+                )
+
+            rows.append(
+                {
+                    "ox_CdA": ox_CdA,                                # m^2
+                    "fuel_CdA": fuel_cda,                            # m^2
+                    "Pc": Pc_achieved,                               # Pa
+                    "MR": MR_achieved,                               # -
+                    "mdot_f": fuel_mdot,                             # kg/s
+                    "mdot_ox": ox_mdot,                              # kg/s
+                    "mdot_total": (
+                        fuel_mdot + ox_mdot
+                        if np.isfinite(fuel_mdot) and np.isfinite(ox_mdot)
+                        else np.nan
+                    ),
+                    "success": point_success,
+                }
+            )
+
+        success_rows = [row for row in rows if bool(row["success"])]
+        if len(success_rows) == 0:
+            raise RuntimeError(
+                "generate_fuel_cda_map() could not produce any valid solved points."
+            )
+
+        df = pd.DataFrame({
+            "ox_CdA": np.array([float(r["ox_CdA"]) for r in success_rows], dtype=float),
+            "fuel_CdA": np.array([float(r["fuel_CdA"]) for r in success_rows], dtype=float),
+            "Pc": np.array([float(r["Pc"]) for r in success_rows], dtype=float),
+            "MR": np.array([float(r["MR"]) for r in success_rows], dtype=float),
+            "mdot_f": np.array([float(r["mdot_f"]) for r in success_rows], dtype=float),
+            "mdot_ox": np.array([float(r["mdot_ox"]) for r in success_rows], dtype=float),
+            "mdot_total": np.array([float(r["mdot_total"]) for r in success_rows], dtype=float),
+            "success": np.array([bool(r["success"]) for r in success_rows], dtype=bool),
+        })
+
+        # Sort by increasing chamber pressure for lookup use
+        df = df.sort_values(by="Pc", ascending=True, kind="mergesort").reset_index(drop=True)
+
+        if save_parquet:
+            import os
+
+            base_name, ext = os.path.splitext(parquet_filename)
+            if ext == "":
+                ext = ".parquet"
+
+            final_name = base_name + ext
+            counter = 1
+
+            while os.path.exists(final_name):
+                final_name = f"{base_name}_{counter}{ext}"
+                counter += 1
+
+            # Saved dataframe is SI-only
+            df.to_parquet(final_name, index=False)
+
+            if verbose:
+                print(f"[generate_fuel_cda_map] Saved parquet: {final_name}")
 
         if return_dataframe:
             return df

@@ -69,6 +69,7 @@ Notes
 
 import copy
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 
 from Utilities import set_winplot_dark
@@ -97,9 +98,13 @@ print_final_condition = True
 use_initial_balance = True                 # if False, use ts.steady_state() directly (balance can be edited below)
 
 # --- Ox actuator limits ---
-ox_cmd_min = 1e-6                          # minimum commanded value [units]
-ox_cmd_max = 1.5e-4                        # maximum commanded value [units]
+ox_cmd_min = 2.2e-5                        # minimum commanded value [units]
+ox_cmd_max = 1.0e-3                        # maximum commanded value [units]
 ox_cmd_rate_limit = 1.5e-4                 # max actuator rate [units/s]
+
+
+# --- Alpha map input ---
+oxCdA_map_filename = "oxCdA_map.parquet"   # steady-state map file: Ox Throttle CdA -> state vector
 
 # --- Pressure command schedule ---
 # DEFINED BELOW
@@ -110,9 +115,9 @@ ox_cmd_rate_limit = 1.5e-4                 # max actuator rate [units/s]
 # --- Pressure controller tuning ---
 Kp_pc = 5.0e-10                        # proportional gain on Pc error (how aggressively we react to instantaneous pressure error)
 Ki_pc = 1.0e-9                         # integral gain on Pc error (accumulates error over time to remove steady-state offset)
-Kd_pc = 1e-11                            # derivative gain on Pc error (reacts to rate of change of pressure, usually noisy so often zero)
+Kd_pc = 0                            # derivative gain on Pc error (reacts to rate of change of pressure, usually noisy so often zero)
 
-u_bias_pc = None                       # baseline valve command; if None, we initialize to current steady-state CdA
+u_bias_pc = 0                          # baseline valve command; if None, we initialize to current steady-state CdA
                                        # (this is what the controller would output if error = 0)
 
 tau_d_pc = 0.0                         # derivative filter time constant [s] (low-pass filter on d(Pc)/dt to reduce noise amplification)
@@ -138,7 +143,7 @@ initial_balance = Balance(
     tune="OxThrottleValve.CdA",
     measure="MainChamber.MR",
     target=2.0,
-    bounds=(1e-6, 1e-4),
+    bounds=(2.2e-5, 1e-4),
     tol=1e-5,
 )
 
@@ -168,8 +173,8 @@ ox_actuator = TestActuator(
 
 extreme = copy.deepcopy(HETS)
 result = extreme.check_max_throttlable_condition(
-    fuel_CdA_range=(ts.FuelThrottleValve.CdA, ts.FuelThrottleValve.CdA),
-    ox_CdA_range=(ox_cmd_min, ox_cmd_max),
+    max_fuel_CdA=ts.FuelThrottleValve.CdA,
+    max_ox_CdA=ox_cmd_max,
 )
 
 print("\n========== MAX THROTTLE CONDITION ==========\n")
@@ -181,6 +186,18 @@ print(f"  MR       : {result['MR']:.4f}")
 print("-" * 40)
 
 
+
+# ============================================================
+# Load Ox CdA Map
+# ============================================================
+df = pd.read_parquet(oxCdA_map_filename)   # expected columns: fuel_CdA, ox_CdA, Pc, MR, ...
+
+Pc_vec = df["Pc"].values
+ox_CdA_vec = df["ox_CdA"].values
+
+
+
+
 # ============================================================
 # Schedule Setup
 # ============================================================
@@ -189,10 +206,11 @@ Pc_initial = ts.MainChamber.p
 Pc_target_schedule = ramp(
     timespan,
     initial_value=Pc_initial,
-    final_value=260 * PA_PER_PSI,
+    final_value=300 * PA_PER_PSI,
     t1=0.0,
     t2=1.0,
 )
+
 
 fuel_throttle_schedule = ramp(
     timespan,
@@ -220,7 +238,7 @@ pid_pc = PID(
     du_dt_limit=None,              # explicitly disable
 )
 
-pid_pc.reset(measurement=ts.MainChamber.p, output=ox_cda_initial)
+pid_pc.reset(measurement=ts.MainChamber.p, output=0)
 
 
 # ============================================================
@@ -270,8 +288,8 @@ thrust[0] = ts.TCA.F
 
 fuel_throttle_cmd[0] = ts.FuelThrottleValve.CdA
 ox_throttle_cmd[0] = ts.OxThrottleValve.CdA
-ox_throttle_unsat[0] = ts.OxThrottleValve.CdA
-ox_ff_cmd[0] = ox_cda_initial
+ox_ff_cmd[0] = np.interp(Pc_target_schedule[0], Pc_vec, ox_CdA_vec)
+ox_throttle_unsat[0] = ox_ff_cmd[0]
 
 Pc_error_hist[0] = Pc_target_schedule[0] - ts.MainChamber.p
 Pc_integral_hist[0] = pid_pc.integral
@@ -294,8 +312,8 @@ for i, t in enumerate(timespan[:-1]):
     Pc_measured = Pc_filt
     Pc_target = Pc_target_schedule[i]
 
-    # Feedforward (no smoothing)
-    ox_ff_target = ox_cda_initial
+    # Feedforward from steady-state Ox CdA -> Pc map
+    ox_ff_target = np.interp(Pc_target, Pc_vec, ox_CdA_vec)
     ox_ff = np.clip(ox_ff_target, ox_cmd_min, ox_cmd_max)
 
     # Dynamic PID bounds
@@ -320,6 +338,17 @@ for i, t in enumerate(timespan[:-1]):
     # Actuator (ONLY place with real rate limits)
     ox_cmd = ox_actuator.update(ox_cmd_target, dt)
     ts.OxThrottleValve.CdA = ox_cmd
+
+    if ts.OxInjectorManifold.p <= ts.MainChamber.p:
+        print(
+            f"[WARN] t={t:.4f} s, "
+            f"P_ox_man={ts.OxInjectorManifold.p:.6e} Pa, "
+            f"Pc={ts.MainChamber.p:.6e} Pa, "
+            f"ox_ff={ox_ff:.6e}, "
+            f"delta_ox={delta_ox:.6e}, "
+            f"ox_cmd_target={ox_cmd_target:.6e}, "
+            f"ox_cmd={ox_cmd:.6e}"
+        )
 
     # Advance plant one timestep
     ts = ts.timestep(dt=dt)
