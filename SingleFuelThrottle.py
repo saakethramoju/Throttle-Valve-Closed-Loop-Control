@@ -48,7 +48,7 @@ Notes
 #     fuel_cmd_target = clip(fuel_cmd_target, min, max)
 #   This is a final safety check to guarantee a valid valve command.
 #
-# - Actuator limits (in TestActuator):
+# - Actuator limits (in FirstOrderActuator):
 #   These represent the real valve hardware:
 #     • minimum and maximum CdA (valve cannot exceed physical bounds)
 #     • maximum rate of change (valve cannot move instantly)
@@ -75,7 +75,7 @@ import matplotlib.pyplot as plt
 from Utilities import set_winplot_dark
 from Utilities.Constants import PA_PER_PSI, LBF_PER_N
 from Network import Balance
-from Controller import TestActuator, PID, ramp, step, low_pass_filter
+from Controller import FirstOrderActuator, PID, ramp, step, low_pass_filter
 from HETS import HETS
 
 set_winplot_dark()  # cool plots format
@@ -162,7 +162,7 @@ if print_initial_condition:
 # ============================================================
 fuel_cda_initial = ts.FuelThrottleValve.CdA
 
-fuel_actuator = TestActuator(
+fuel_actuator = FirstOrderActuator(
     initial_value=fuel_cda_initial,        # actuator starts from actual plant valve state
     min_value=fuel_cmd_min,
     max_value=fuel_cmd_max,

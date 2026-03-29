@@ -47,7 +47,7 @@ Pc_measured --> PID on Pc ----------> delta_alpha
 #     alpha_cmd = clip(alpha_cmd, 0, 1)
 #   This is a final safety check to guarantee a valid command.
 #
-# - Actuator limits (in TestActuator):
+# - Actuator limits (in FirstOrderActuator):
 #   These enforce real physical constraints:
 #     • minimum and maximum CdA
 #     • maximum rate of change of CdA (valve cannot move instantly)
@@ -75,7 +75,7 @@ from Utilities import set_winplot_dark
 from Utilities.Constants import PA_PER_PSI, LBF_PER_N
 from Network.Components import *
 from Network import Balance
-from Controller import TestActuator, PID, ramp, low_pass_filter, step
+from Controller import FirstOrderActuator, PID, ramp, low_pass_filter, step
 from HETS import HETS
 
 set_winplot_dark() # cool plots format
@@ -165,13 +165,13 @@ if print_initial_condition:
 fuel_cda_initial = ts.FuelThrottleValve.CdA
 ox_cda_initial = ts.OxThrottleValve.CdA
 
-fuel_actuator = TestActuator(
+fuel_actuator = FirstOrderActuator(
     initial_value=fuel_cda_initial,        # actuator starts from actual plant valve state
     min_value=fuel_cmd_min,
     max_value=fuel_cmd_max,
     max_rate=fuel_cmd_rate_limit,
 )
-ox_actuator = TestActuator(
+ox_actuator = FirstOrderActuator(
     initial_value=ox_cda_initial,          # actuator starts from actual plant valve state
     min_value=ox_cmd_min,
     max_value=ox_cmd_max,
