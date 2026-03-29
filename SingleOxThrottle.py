@@ -107,7 +107,7 @@ ox_cmd_max = 1.0e-3                        # maximum commanded CdA [m^2]
 
 # --- Ox second-order actuator parameters ---
 ox_actuator_wn = 80.0                      # natural frequency [rad/s]
-ox_actuator_zeta = 0.8                     # damping ratio [-]
+ox_actuator_zeta = 0.6                     # damping ratio [-]
 ox_actuator_initial_velocity = 0.0         # initial CdA rate [m^2/s]
 ox_actuator_max_velocity = 1.5e-4          # optional max CdA rate [m^2/s]; None disables explicit rate clipping
 
@@ -122,8 +122,8 @@ oxCdA_map_filename = "oxCdA_map.parquet"   # steady-state map file: Ox Throttle 
 
 # --- Pressure controller tuning ---
 Kp_pc = 5.0e-10                            # proportional gain on Pc error
-Ki_pc = 1.0e-9                             # integral gain on Pc error
-Kd_pc = 1.0e-11                                # derivative gain on Pc error
+Ki_pc = 5.0e-10                             # integral gain on Pc error
+Kd_pc = 2.0e-10                                # derivative gain on Pc error
 
 u_bias_pc = 0.0                            # baseline valve command; if None, initialize to current steady-state CdA
 tau_d_pc = 0.0                             # derivative filter time constant [s]
@@ -213,6 +213,13 @@ Pc_target_schedule = ramp(
     final_value=280 * PA_PER_PSI,
     t1=0.0,
     t2=1.0,
+)
+
+Pc_target_schedule = step(
+    timespan,
+    ts.MainChamber.p,
+    300*PA_PER_PSI,
+    0
 )
 
 fuel_throttle_schedule = ramp(
@@ -523,18 +530,18 @@ axs_control[2].plot(
 )
 axs_control[2].plot(
     timespan,
+    ox_throttle_cm2,
+    color=control_colors["ox_actual"],
+    linewidth=2,
+    label="Ox actual CdA",
+)
+axs_control[2].plot(
+    timespan,
     ox_throttle_unsat_cm2,
     color=control_colors["ox_unsat"],
     linestyle="--",
     linewidth=1.75,
     label="Ox target command",
-)
-axs_control[2].plot(
-    timespan,
-    ox_throttle_cm2,
-    color=control_colors["ox_actual"],
-    linewidth=2,
-    label="Ox actual CdA",
 )
 axs_control[2].plot(
     timespan,
