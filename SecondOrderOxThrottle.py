@@ -1,57 +1,61 @@
 """
-Closed-loop Pc control using only the fuel throttle valve.
+Closed-loop Pc control using only the oxidizer throttle valve.
 
 Block diagram
 -------------
 Pc_target_schedule
         |
         v
-Pc_measured --> PID on Pc ----------> fuel_cmd_target
-        |                                   |
-        |                              rate limit
-        |                                   v
-        |                            fuel actuator state
-        |                                   |
-        +-----------------------------------+
-                                       |
-                                       v
-                            Fuel throttle actuator
-                                       |
-                                       v
-                                     plant
-                                       |
-                                       v
-                              Pc, MR, mdot, thrust
+Pc_measured --> PID on Pc ----------> ox_cmd_target
+        |                                  |
+        |                           second-order
+        |                         actuator dynamics
+        |                                  v
+        |                           ox actuator state
+        |                           (CdA, CdA rate)
+        |                                  |
+        +----------------------------------+
+                                      |
+                                      v
+                           Ox throttle actuator
+                                      |
+                                      v
+                                    plant
+                                      |
+                                      v
+                             Pc, MR, mdot, thrust
 
 Notes
 -----
-- Only the fuel throttle is actively controlled.
-- The oxidizer throttle may still be scheduled independently to create disturbances
+- Only the oxidizer throttle is actively controlled.
+- The fuel throttle may still be scheduled independently to create disturbances
   or operating-point changes, but it is not part of the feedback loop.
 """
 
 # ============================================================
-# Controller Limits and Rates
+# Controller Limits and Actuator Dynamics
 # ============================================================
 # This controller uses a feedforward + PID trim structure:
-#   fuel_cmd = fuel_ff + delta_fuel
+#   ox_cmd = ox_ff + delta_ox
 #
 # The remaining limits each serve a specific purpose:
 #
 # - Dynamic PID bounds:
-#     pid_pc.u_min = fuel_cmd_min - fuel_ff
-#     pid_pc.u_max = fuel_cmd_max - fuel_ff
-#   These ensure the PID output (delta_fuel) cannot push the
-#   total Fuel valve command outside physical valve limits.
+#     pid_pc.u_min = ox_cmd_min - ox_ff
+#     pid_pc.u_max = ox_cmd_max - ox_ff
+#   These ensure the PID output (delta_ox) cannot push the
+#   total Ox valve command outside physical valve limits.
 #
 # - Final command clipping:
-#     fuel_cmd_target = clip(fuel_cmd_target, min, max)
+#     ox_cmd_target = clip(ox_cmd_target, min, max)
 #   This is a final safety check to guarantee a valid valve command.
 #
-# - Actuator limits (in FirstOrderActuator):
-#   These represent the real valve hardware:
+# - Actuator dynamics (in SecondOrderActuator):
+#   These represent the real valve hardware more realistically:
 #     • minimum and maximum CdA (valve cannot exceed physical bounds)
-#     • maximum rate of change (valve cannot move instantly)
+#     • second-order response with natural frequency wn
+#     • damping ratio zeta
+#     • optional hard limit on CdA rate via max_velocity
 #
 # - Optional filtering (tau_pc, tau_d):
 #   These smooth noisy signals:
@@ -61,10 +65,10 @@ Notes
 # ------------------------------------------------------------
 # Future extensions (if needed):
 # You can reintroduce additional smoothing layers such as:
-#   • feedforward rate limiting (smooth fuel_ff changes)
-#   • PID output slew rate limiting (limit how fast delta_fuel changes)
-# These can help reduce oscillations or aggressive commands,
-# but are not required for basic closed-loop operation.
+#   • feedforward rate limiting (smooth ox_ff changes)
+#   • PID output slew rate limiting (limit how fast delta_ox changes)
+#   • multi-rate simulation (faster actuator loop than outer Pc loop)
+# These can help reduce oscillations or aggressive commands.
 # ============================================================
 
 import copy
@@ -75,7 +79,7 @@ import matplotlib.pyplot as plt
 from Utilities import set_winplot_dark
 from Utilities.Constants import PA_PER_PSI, LBF_PER_N
 from Network import Balance
-from Controller import FirstOrderActuator, PID, ramp, step, low_pass_filter
+from Controller import SecondOrderActuator, PID, ramp, step, low_pass_filter
 from HETS import HETS
 
 set_winplot_dark()  # cool plots format
@@ -97,33 +101,35 @@ print_final_condition = True
 # --- Initial-condition setup ---
 use_initial_balance = True                 # if False, use ts.steady_state() directly (balance can be edited below)
 
-# --- Fuel actuator limits ---
-fuel_cmd_min = 1.5e-5                      # minimum commanded value [units]
-fuel_cmd_max = 1.0e-3                      # maximum commanded value [units]
-fuel_cmd_rate_limit = 1.5e-4               # max actuator rate [units/s]
+# --- Ox actuator travel limits ---
+ox_cmd_min = 2.2e-5                        # minimum commanded CdA [m^2]
+ox_cmd_max = 1.0e-3                        # maximum commanded CdA [m^2]
 
-# --- Fuel map input ---
-fuelCdA_map_filename = "fuelCdA_map.parquet"   # steady-state map file: Fuel Throttle CdA -> state vector
+# --- Ox second-order actuator parameters ---
+ox_actuator_wn = 80.0                      # natural frequency [rad/s]
+ox_actuator_zeta = 0.6                     # damping ratio [-]
+ox_actuator_initial_velocity = 0.0         # initial CdA rate [m^2/s]
+ox_actuator_max_velocity = 1.5e-4          # optional max CdA rate [m^2/s]; None disables explicit rate clipping
+
+# --- Ox map input ---
+oxCdA_map_filename = "oxCdA_map.parquet"   # steady-state map file: Ox Throttle CdA -> state vector
 
 # --- Pressure command schedule ---
 # DEFINED BELOW
 
-# --- Ox throttle schedule ---
+# --- Fuel throttle schedule ---
 # DEFINED BELOW
 
 # --- Pressure controller tuning ---
-Kp_pc = 5.0e-10                        # proportional gain on Pc error (how aggressively we react to instantaneous pressure error)
-Ki_pc = 1.0e-9                         # integral gain on Pc error (accumulates error over time to remove steady-state offset)
-Kd_pc = 0                              # derivative gain on Pc error (reacts to rate of change of pressure, usually noisy so often zero)
+Kp_pc = 5.0e-10                            # proportional gain on Pc error
+Ki_pc = 5.0e-10                             # integral gain on Pc error
+Kd_pc = 2.0e-10                                # derivative gain on Pc error
 
-u_bias_pc = 0                          # baseline valve command; if None, we initialize to current steady-state CdA
-                                       # (this is what the controller would output if error = 0)
-
-tau_d_pc = 0.0                         # derivative filter time constant [s] (low-pass filter on d(Pc)/dt to reduce noise amplification)
+u_bias_pc = 0.0                            # baseline valve command; if None, initialize to current steady-state CdA
+tau_d_pc = 0.0                             # derivative filter time constant [s]
 
 # --- Additional command shaping ---
-tau_pc = 0.0                           # optional low-pass filter on measured Pc [s]
-                                       # (simulates sensor filtering / removes noise before PID sees it)
+tau_pc = 0.0                               # optional low-pass filter on measured Pc [s]
 
 
 # ============================================================
@@ -138,7 +144,7 @@ timespan = np.arange(0.0, t_final + dt, dt)
 ts = copy.deepcopy(test_stand)
 
 initial_balance = Balance(
-    tune="FuelThrottleValve.CdA",
+    tune="OxThrottleValve.CdA",
     measure="MainChamber.MR",
     target=2.0,
     bounds=(2.2e-5, 1e-4),
@@ -160,23 +166,26 @@ if print_initial_condition:
 # ============================================================
 # Actuator Setup
 # ============================================================
-fuel_cda_initial = ts.FuelThrottleValve.CdA
+ox_cda_initial = ts.OxThrottleValve.CdA
 
-fuel_actuator = FirstOrderActuator(
-    initial_value=fuel_cda_initial,        # actuator starts from actual plant valve state
-    min_value=fuel_cmd_min,
-    max_value=fuel_cmd_max,
-    max_rate=fuel_cmd_rate_limit,
+ox_actuator = SecondOrderActuator(
+    initial_value=ox_cda_initial,              # actuator starts from actual plant valve state
+    min_value=ox_cmd_min,
+    max_value=ox_cmd_max,
+    wn=ox_actuator_wn,
+    zeta=ox_actuator_zeta,
+    initial_velocity=ox_actuator_initial_velocity,
+    max_velocity=ox_actuator_max_velocity,
 )
 
 extreme = copy.deepcopy(HETS)
 result = extreme.check_max_throttlable_condition(
-    max_fuel_CdA=fuel_cmd_max,
-    max_ox_CdA=ts.OxThrottleValve.CdA,
+    max_fuel_CdA=ts.FuelThrottleValve.CdA,
+    max_ox_CdA=ox_cmd_max,
 )
 
 print("\n========== MAX THROTTLE CONDITION ==========\n")
-print(f"{'FIXED OX / MAX FUEL RANGE':>25}")
+print(f"{'FIXED FUEL / MAX OX RANGE':>25}")
 print(f"  Fuel CdA : {result['fuel_CdA']:.4e} m^2")
 print(f"  Ox CdA   : {result['ox_CdA']:.4e} m^2")
 print(f"  Pc       : {result['Pc'] / PA_PER_PSI:8.2f} psia")
@@ -185,12 +194,12 @@ print("-" * 40)
 
 
 # ============================================================
-# Load Fuel CdA Map
+# Load Ox CdA Map
 # ============================================================
-df = pd.read_parquet(fuelCdA_map_filename)   # expected columns: fuel_CdA, ox_CdA, Pc, MR, ...
+df = pd.read_parquet(oxCdA_map_filename)   # expected columns: fuel_CdA, ox_CdA, Pc, MR, ...
 
 Pc_vec = df["Pc"].values
-fuel_CdA_vec = df["fuel_CdA"].values
+ox_CdA_vec = df["ox_CdA"].values
 
 
 # ============================================================
@@ -201,15 +210,22 @@ Pc_initial = ts.MainChamber.p
 Pc_target_schedule = ramp(
     timespan,
     initial_value=Pc_initial,
-    final_value=275 * PA_PER_PSI,
+    final_value=280 * PA_PER_PSI,
     t1=0.0,
     t2=1.0,
 )
 
-ox_throttle_schedule = ramp(
+Pc_target_schedule = step(
     timespan,
-    initial_value=ts.OxThrottleValve.CdA,
-    final_value=ts.OxThrottleValve.CdA,
+    ts.MainChamber.p,
+    300*PA_PER_PSI,
+    0
+)
+
+fuel_throttle_schedule = ramp(
+    timespan,
+    initial_value=ts.FuelThrottleValve.CdA,
+    final_value=ts.FuelThrottleValve.CdA,
     t1=1.5,
     t2=3.0,
 )
@@ -219,7 +235,7 @@ ox_throttle_schedule = ramp(
 # Pressure Controller (Pc loop)
 # ============================================================
 if u_bias_pc is None:
-    u_bias_pc = fuel_cda_initial
+    u_bias_pc = ox_cda_initial
 
 pid_pc = PID(
     Kp=Kp_pc,
@@ -232,7 +248,7 @@ pid_pc = PID(
     du_dt_limit=None,              # explicitly disable
 )
 
-pid_pc.reset(measurement=ts.MainChamber.p, output=0)
+pid_pc.reset(measurement=ts.MainChamber.p, output=0.0)
 
 
 # ============================================================
@@ -254,8 +270,9 @@ thrust = np.zeros_like(timespan)
 
 fuel_throttle_cmd = np.zeros_like(timespan)
 ox_throttle_cmd = np.zeros_like(timespan)
-fuel_throttle_unsat = np.zeros_like(timespan)
-fuel_ff_cmd = np.zeros_like(timespan)
+ox_throttle_unsat = np.zeros_like(timespan)
+ox_ff_cmd = np.zeros_like(timespan)
+ox_actuator_velocity = np.zeros_like(timespan)
 
 Pc_error_hist = np.zeros_like(timespan)
 Pc_integral_hist = np.zeros_like(timespan)
@@ -274,7 +291,7 @@ ox_inj_pressure[0] = ts.OxInjectorManifold.p
 fuel_inj_mdot[0] = ts.FuelInjector.mdot
 ox_inj_mdot[0] = ts.OxInjector.mdot
 
-Pc_filt = ts.MainChamber.p                # filtered Pc state for optional measurement filtering
+Pc_filt = ts.MainChamber.p
 chamber_pressure[0] = ts.MainChamber.p
 mixture_ratio[0] = ts.MainChamber.MR
 tca_mdot[0] = ts.TCA.mdot
@@ -282,8 +299,9 @@ thrust[0] = ts.TCA.F
 
 fuel_throttle_cmd[0] = ts.FuelThrottleValve.CdA
 ox_throttle_cmd[0] = ts.OxThrottleValve.CdA
-fuel_ff_cmd[0] = np.interp(Pc_target_schedule[0], Pc_vec, fuel_CdA_vec)
-fuel_throttle_unsat[0] = fuel_ff_cmd[0]
+ox_ff_cmd[0] = np.interp(Pc_target_schedule[0], Pc_vec, ox_CdA_vec)
+ox_throttle_unsat[0] = ox_ff_cmd[0]
+ox_actuator_velocity[0] = ox_actuator.velocity
 
 Pc_error_hist[0] = Pc_target_schedule[0] - ts.MainChamber.p
 Pc_integral_hist[0] = pid_pc.integral
@@ -295,7 +313,7 @@ Pc_dmeas_hist[0] = 0.0
 # ============================================================
 for i, t in enumerate(timespan[:-1]):
 
-    ts.OxThrottleValve.CdA = ox_throttle_schedule[i]   # apply scheduled ox command
+    ts.FuelThrottleValve.CdA = fuel_throttle_schedule[i]   # apply scheduled fuel command
     Pc_raw = ts.MainChamber.p
 
     if tau_pc > 0.0:
@@ -306,42 +324,43 @@ for i, t in enumerate(timespan[:-1]):
     Pc_measured = Pc_filt
     Pc_target = Pc_target_schedule[i]
 
-    # Feedforward from steady-state Fuel CdA -> Pc map
-    fuel_ff_target = np.interp(Pc_target, Pc_vec, fuel_CdA_vec)
-    fuel_ff = np.clip(fuel_ff_target, fuel_cmd_min, fuel_cmd_max)
+    # Feedforward from steady-state Ox CdA -> Pc map
+    ox_ff_target = np.interp(Pc_target, Pc_vec, ox_CdA_vec)
+    ox_ff = np.clip(ox_ff_target, ox_cmd_min, ox_cmd_max)
 
     # Dynamic PID bounds
-    pid_pc.u_min = fuel_cmd_min - fuel_ff
-    pid_pc.u_max = fuel_cmd_max - fuel_ff
+    pid_pc.u_min = ox_cmd_min - ox_ff
+    pid_pc.u_max = ox_cmd_max - ox_ff
     pid_pc.u_bias = 0.0
 
     # PID update
-    delta_fuel, err_pc, integ_pc, dmeas_pc = pid_pc.update(
+    delta_ox, err_pc, integ_pc, dmeas_pc = pid_pc.update(
         target=Pc_target,
         measurement=Pc_measured,
         dt=dt,
     )
 
     # Combine FF + feedback
-    fuel_cmd_target = fuel_ff + delta_fuel
-    fuel_cmd_target = np.clip(fuel_cmd_target, fuel_cmd_min, fuel_cmd_max)  # purely for redundancy
+    ox_cmd_target = ox_ff + delta_ox
+    ox_cmd_target = np.clip(ox_cmd_target, ox_cmd_min, ox_cmd_max)
 
-    fuel_ff_cmd[i + 1] = fuel_ff
-    fuel_throttle_unsat[i + 1] = fuel_cmd_target
+    ox_ff_cmd[i + 1] = ox_ff
+    ox_throttle_unsat[i + 1] = ox_cmd_target
 
-    # Actuator (ONLY place with real rate limits)
-    fuel_cmd = fuel_actuator.update(fuel_cmd_target, dt)
-    ts.FuelThrottleValve.CdA = fuel_cmd
+    # Second-order actuator
+    ox_cmd = ox_actuator.update(ox_cmd_target, dt)
+    ts.OxThrottleValve.CdA = ox_cmd
 
-    if ts.FuelInjectorManifold.p <= ts.MainChamber.p:
+    if ts.OxInjectorManifold.p <= ts.MainChamber.p:
         print(
             f"[WARN] t={t:.4f} s, "
-            f"P_fuel_man={ts.FuelInjectorManifold.p:.6e} Pa, "
+            f"P_ox_man={ts.OxInjectorManifold.p:.6e} Pa, "
             f"Pc={ts.MainChamber.p:.6e} Pa, "
-            f"fuel_ff={fuel_ff:.6e}, "
-            f"delta_fuel={delta_fuel:.6e}, "
-            f"fuel_cmd_target={fuel_cmd_target:.6e}, "
-            f"fuel_cmd={fuel_cmd:.6e}"
+            f"ox_ff={ox_ff:.6e}, "
+            f"delta_ox={delta_ox:.6e}, "
+            f"ox_cmd_target={ox_cmd_target:.6e}, "
+            f"ox_cmd={ox_cmd:.6e}, "
+            f"ox_cmd_dot={ox_actuator.velocity:.6e}"
         )
 
     # Advance plant one timestep
@@ -363,6 +382,7 @@ for i, t in enumerate(timespan[:-1]):
 
     fuel_throttle_cmd[i + 1] = ts.FuelThrottleValve.CdA
     ox_throttle_cmd[i + 1] = ts.OxThrottleValve.CdA
+    ox_actuator_velocity[i + 1] = ox_actuator.velocity
 
     Pc_error_hist[i + 1] = err_pc
     Pc_integral_hist[i + 1] = integ_pc
@@ -399,17 +419,21 @@ control_colors = {
     "pc_error": "#00BFFF",
     "pc_integral": "#FF6EC7",
     "pc_dmeas": "#00FFFF",
-    "fuel_unsat": "#FF3131",
-    "fuel_actual": "#FFA500",
+    "ox_unsat": "#FF3131",
+    "ox_actual": "#FFA500",
     "pc_target": "#FFD700",
+    "ox_velocity": "#39FF14",
+    "ox_ff": "#FFFFFF",
 }
 
-fuel_sched_color = "#FFA500"
-ox_sched_color = "#FFFFFF"
+fuel_sched_color = "#FFFFFF"
+ox_sched_color = "#FFA500"
 
 fuel_throttle_cm2 = fuel_throttle_cmd * 1e4
 ox_throttle_cm2 = ox_throttle_cmd * 1e4
-fuel_throttle_unsat_cm2 = fuel_throttle_unsat * 1e4
+ox_throttle_unsat_cm2 = ox_throttle_unsat * 1e4
+ox_ff_cmd_cm2 = ox_ff_cmd * 1e4
+ox_actuator_velocity_cm2s = ox_actuator_velocity * 1e4
 
 fuel_inj_pressure_psia = fuel_inj_pressure / PA_PER_PSI
 ox_inj_pressure_psia = ox_inj_pressure / PA_PER_PSI
@@ -449,7 +473,7 @@ def add_ox_throttle_overlay(ax):
 # -------------------------
 # Figure 1: Control loop
 # -------------------------
-fig_control, axs_control = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+fig_control, axs_control = plt.subplots(4, 1, figsize=(10, 12), sharex=True)
 
 axs_control[0].plot(
     timespan,
@@ -499,31 +523,50 @@ axs_control[1].legend()
 
 axs_control[2].plot(
     timespan,
+    ox_ff_cmd_cm2,
+    color=control_colors["ox_ff"],
+    linewidth=1.75,
+    label="Ox feedforward",
+)
+axs_control[2].plot(
+    timespan,
     ox_throttle_cm2,
-    color=ox_sched_color,
+    color=control_colors["ox_actual"],
     linewidth=2,
-    label="Ox throttle CdA",
+    label="Ox actual CdA",
+)
+axs_control[2].plot(
+    timespan,
+    ox_throttle_unsat_cm2,
+    color=control_colors["ox_unsat"],
+    linestyle="--",
+    linewidth=1.75,
+    label="Ox target command",
 )
 axs_control[2].plot(
     timespan,
     fuel_throttle_cm2,
-    color=control_colors["fuel_actual"],
+    color=fuel_sched_color,
     linewidth=2,
     label="Fuel throttle CdA",
 )
-axs_control[2].plot(
-    timespan,
-    fuel_throttle_unsat_cm2,
-    color=control_colors["fuel_unsat"],
-    linestyle="--",
-    linewidth=1.75,
-    label="Fuel unsat command",
-)
 axs_control[2].set_ylabel("CdA (cm$^2$)")
-axs_control[2].set_xlabel("Time (s)")
 axs_control[2].set_title("Throttle Commands")
 axs_control[2].grid(alpha=0.3)
 axs_control[2].legend()
+
+axs_control[3].plot(
+    timespan,
+    ox_actuator_velocity_cm2s,
+    color=control_colors["ox_velocity"],
+    linewidth=2,
+    label="Ox actuator CdA rate",
+)
+axs_control[3].set_ylabel("CdA rate (cm$^2$/s)")
+axs_control[3].set_xlabel("Time (s)")
+axs_control[3].set_title("Second-Order Actuator Velocity")
+axs_control[3].grid(alpha=0.3)
+axs_control[3].legend()
 
 fig_control.tight_layout()
 
@@ -558,7 +601,7 @@ fig_fuel.tight_layout()
 # -------------------------
 # Figure 3: Ox side
 # -------------------------
-fig_ox, axs_ox = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
+fig_ox, axs_ox = plt.subplots(4, 1, figsize=(10, 11), sharex=True)
 
 axs_ox[0].plot(timespan, ox_sys_mdot, color=ox_colors["sys_mdot"], linewidth=2)
 axs_ox[0].set_ylabel("Ox System mdot (kg/s)")
@@ -574,10 +617,15 @@ add_ox_throttle_overlay(axs_ox[1])
 
 axs_ox[2].plot(timespan, ox_inj_mdot, color=ox_colors["inj_mdot"], linewidth=2)
 axs_ox[2].set_ylabel("Ox Injector mdot (kg/s)")
-axs_ox[2].set_xlabel("Time (s)")
 axs_ox[2].set_title("Oxidizer Injector Mass Flow")
 axs_ox[2].grid(alpha=0.3)
 add_ox_throttle_overlay(axs_ox[2])
+
+axs_ox[3].plot(timespan, ox_actuator_velocity_cm2s, color=control_colors["ox_velocity"], linewidth=2)
+axs_ox[3].set_ylabel("CdA rate (cm$^2$/s)")
+axs_ox[3].set_xlabel("Time (s)")
+axs_ox[3].set_title("Ox Actuator CdA Rate")
+axs_ox[3].grid(alpha=0.3)
 
 fig_ox.tight_layout()
 
