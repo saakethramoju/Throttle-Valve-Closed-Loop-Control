@@ -132,7 +132,7 @@ class Tank(Volume):
     def __str__(self):
         return (
             f"Tank (name={self.name}, propellant={self.propellant}, "
-            f"p={self.p:.3e} Pa, V={self.V:.3e} m^3, rho={self.rho:.3e} kg/m^3)"
+            f"p={self.p:.3e} Pa, V={self.V:.3e} m^3)"
         )
     
 
@@ -162,7 +162,7 @@ class InjectorManifold(Volume):
     def __str__(self):
         return (
             f"Injector Manifold (name={self.name}, p={self.p:.3e} Pa, "
-            f"V={self.V:.3e} m^3, rho={self.rho:.3e} kg/m^3)"
+            f"V={self.V:.3e} m^3)"
         )
 
 class CombustionChamber(Volume):
@@ -252,7 +252,7 @@ class Line(Branch):
     def __str__(self):
         return (
             f"Line (name={self.name}, mdot={self.mdot:.3e} kg/s, "
-            f"L={self.L:.3e} m, A={self.A:.3e} m^2, Cd={self.Cd:.3f})"
+            f"L={self.L:.3e} m, A={self.A:.3e} m^2)"
         )
 
 
