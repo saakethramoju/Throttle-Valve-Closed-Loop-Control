@@ -59,12 +59,6 @@ def normalize_fluid_name(fluid_name: str) -> str:
     )
 
 
-from functools import lru_cache
-from CoolProp.CoolProp import PropsSI
-from scipy.optimize import toms748
-import warnings
-
-
 @lru_cache(maxsize=None)
 def _normalized_fluid_name(fluid_name: str) -> str:
     """
